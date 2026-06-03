@@ -5,6 +5,8 @@ from xgboost import XGBRegressor
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
 from datetime import datetime
 import warnings
+import os
+from sqlalchemy import create_engine
 
 warnings.filterwarnings('ignore')
 
@@ -17,7 +19,22 @@ def get_meal_type(t):
 
 def prepare_data(df):
     # Dynamic Feature Generation for natively dropped columns
-    df['date_obj'] = pd.to_datetime(df['date'], format='%d-%m-%Y')
+    # Calculate effective_timestamp based on prebooking status
+    df['effective_timestamp'] = pd.to_numeric(np.where(df['is_prebooking'] == 1, df['prebooking_datetime'], df['order_timestamp']), errors='coerce')
+    
+    # Convert to datetime and adjust to local time if needed (assuming local timezone or naive works)
+    # We will derive date_obj and time_slot directly from effective_timestamp
+    df['effective_datetime'] = pd.to_datetime(df['effective_timestamp'], unit='s')
+    df['date_obj'] = df['effective_datetime'].dt.normalize()
+    df['time_slot'] = df['effective_datetime'].dt.hour
+    
+    # Filter dataset strictly to Jan 1, 2026 - Jun 30, 2026
+    start_date = pd.to_datetime('01-01-2026', format='%d-%m-%Y')
+    end_date = pd.to_datetime('30-06-2026', format='%d-%m-%Y')
+    df = df[(df['date_obj'] >= start_date) & (df['date_obj'] <= end_date)]
+    
+    # Enforce Canteen Operating Hours (8 AM to 6 PM)
+    df = df[(df['time_slot'] >= 8) & (df['time_slot'] < 18)]
     
     df['day_of_week'] = df['date_obj'].dt.dayofweek
     df['is_weekend'] = (df['day_of_week'] >= 5).astype(int)
@@ -36,7 +53,11 @@ def prepare_data(df):
     df['momentum'] = df['rolling_mean_3'] - df['rolling_mean_7']
 
     # Chronologically split before building averages to prevent Data Leakage!
-    split_idx = int(len(df) * 0.8)
+    # True Forecasting cut: train up to Apr 20, test from Apr 21 onwards
+    cutoff_date = pd.to_datetime('20-04-2026', format='%d-%m-%Y')
+    split_idx_candidates = df[df['date_obj'] > cutoff_date].index
+    split_idx = split_idx_candidates[0] if len(split_idx_candidates) > 0 else len(df)
+    
     train_df = df.iloc[:split_idx].copy()
     
     # Historical Dictionaries strictly from training data
@@ -86,7 +107,7 @@ def prepare_data(df):
         'user_avg_qty': train_df['quantity'].mean()
     }
 
-    return df, lookups
+    return df, lookups, split_idx
 
 def extract_features(df):
     cat_cols = ['item', 'season', 'weather', 'meal_type']
@@ -114,8 +135,7 @@ def extract_features(df):
     
     return X, y, feature_cols, encoded_cat_cols
 
-def build_model(X, y, feature_cols):
-    split_idx = int(len(X) * 0.8)
+def build_model(X, y, feature_cols, split_idx):
     X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
     
@@ -277,16 +297,28 @@ def predict_demand(target_date_str, df, model, feature_cols, encoded_cat_cols, l
         print("========================================================================\n")
 
 def main():
-    print("[1/3] Loading dataset...")
-    df = pd.read_csv('data1.csv')
+    print("[1/3] Fetching dataset from PostgreSQL...")
+    user = os.environ.get('PGUSER', 'postgres')
+    password = os.environ.get('PGPASSWORD', 'admin')
+    host = os.environ.get('PGHOST', 'localhost')
+    port = os.environ.get('PGPORT', '5432')
+    database = os.environ.get('PGDATABASE', 'bitespeed')
     
-    df, lookups = prepare_data(df)
+    try:
+        engine = create_engine(f'postgresql://{user}:{password}@{host}:{port}/{database}')
+        df = pd.read_sql('SELECT * FROM orders', engine)
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        return
+        
+    
+    df, lookups, split_idx = prepare_data(df)
     
     print("[2/3] Extracting features...")
     X, y, feature_cols, encoded_cat_cols = extract_features(df)
     
     print("[3/3] Training and Evaluating Leak-Proof Models...")
-    model = build_model(X, y, feature_cols)
+    model = build_model(X, y, feature_cols, split_idx)
     
     while True:
         date_input = input("\nEnter a date (DD-MM-YYYY) to forecast demand (or type 'q' to quit): ").strip()

@@ -1,61 +1,112 @@
-# BiteSpeed - ML Data Collection App
+# BiteSpeed — Canteen Management & AI-Driven Demand Forecasting System
 
-This is a local food ordering app built exclusively to quickly take inputs (Dine-in or Prebook) and silently dump strictly formatted ML data instantly into `data1.csv`.
+## Overview
+BiteSpeed is a cutting-edge, full-stack canteen management platform designed to revolutionize institutional food service. By seamlessly combining a modern web frontend, a robust transactional backend, and an advanced Machine Learning pipeline, BiteSpeed provides real-time demand forecasting, live order orchestration, comprehensive financial analytics, and an integrated supply chain checklist.
 
-## Project Structure
-- **/backend**: A tiny Node.js + Express API server. It receives the order arrays and securely appends lines into `data1.csv`.
-- **/frontend**: A React + Vite Web App styled with Tailwind CSS, packaged internally using Capacitor so it behaves like a native Android app.
-- **`data1.csv`**: The master database flat-file. The backend will automatically create this if it's missing.
+The system is architected around three highly optimized roles:
+- **Normal Users**: A frictionless ordering interface supporting immediate dine-in or discounted pre-booking.
+- **Management Staff**: A tactical dashboard for kitchen operations, real-time demand vs. actuals tracking, and ingredient procurement.
+- **Administrators**: A master control console for system-wide configuration, AI hyperparameter tuning, and advanced business intelligence.
 
----
+## System Architecture
 
-## 🛠️ Phase 1: Running the Backend (The Brain)
+BiteSpeed operates on a distributed, microservices-inspired architecture comprising three core engines:
 
-**You MUST start the backend on your laptop before pushing buttons on your phone.**
-1. Open a terminal and go into the backend folder:
-   ```bash
-   cd backend
-   npm install
-   node server.js
-   ```
-2. You will see `Server is running on port 5000`. Leave this terminal open in the background forever!
+### 1. Frontend Web & Mobile Client (React + Vite + Tailwind CSS + Capacitor)
+- **Framework**: React.js bundled via Vite for lightning-fast HMR and optimized production builds.
+- **Styling**: Tailwind CSS for a responsive, utility-first UI design.
+- **Cross-Platform**: Integrated with Capacitor to seamlessly wrap the React web app into a native Android APK.
+- **Real-Time Polling**: Smart polling mechanisms fetch live data every 5 seconds without overloading the backend.
 
----
+### 2. Backend API & Database (Node.js + Express + PostgreSQL)
+- **API Gateway**: A Node.js and Express.js RESTful API serving as the central hub for authentication, order processing, and state management.
+- **Database**: PostgreSQL (v14+) provides robust ACID compliance for critical transactional data, user roles, and order history.
+- **State Management**: Persists environmental settings (`management_settings.json`) used as heuristics for the ML pipeline.
 
-## 🌐 Phase 2: Running the Frontend on your Laptop (Testing)
+### 3. Machine Learning Inference & Training Server (Python + LightGBM + Optuna)
+- **Async Python HTTP Server**: Hosts the ML models (`model_server.py`) independent of the transactional backend, ensuring heavy computations don't block the Node.js API.
+- **GPU-Accelerated LightGBM**: Utilizes `device_type: 'gpu'` to build deep trees across a massive dataset with minimal latency.
+- **Pre-tuned Hyperparameters**: Uses scientifically pre-optimized, hardcoded Optuna parameters specifically tailored to the dual-model split to prevent runtime crashes and ensure stability.
 
-If you just want to test if the buttons work and see if it drops orders into `data1.csv`:
-1. Open a new terminal and go into the frontend folder:
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-2. Open `http://localhost:5173` in your laptop's browser. Place an order, and watch it show up in `data1.csv`!
+## Directory Structure
+```text
+/e2
+├── backend/                  # Node.js + Express API & PostgreSQL Integration
+│   ├── server.js             # Main server logic and routing
+│   ├── management_settings.json # Mock heuristic data configuration
+│   └── package.json          # Node dependencies
+├── frontend/                 # React + Vite web app
+│   ├── android/              # Capacitor Android build configuration
+│   ├── src/                  # React components, services, and assets
+│   ├── tailwind.config.js    # Tailwind UI configuration
+│   └── package.json          # Frontend dependencies
+├── ml/                       # Python Machine Learning Backend
+│   ├── model_server.py       # Asynchronous inference & tuning server
+│   ├── get_predictions.py    # Feature engineering & LightGBM logic
+│   ├── lightgbm_model.joblib # Serialized model artifact
+│   └── optuna_history.json   # Live trail of hyperparameters
+├── old/                      # Archived experimentation scripts
+├── start.bat                 # One-click unified launcher for all services
+├── features.md               # Deep dive into system features
+└── README.md                 # Project architecture & setup documentation
+```
 
----
+## Prerequisites
 
-## 📱 Phase 3: Building the APK for your Phone (Android Studio)
+| Dependency | Version | Purpose |
+|---|---|---|
+| **Node.js** | v18+ | Backend API and frontend Vite server |
+| **npm** | v9+ | JavaScript package management |
+| **Python** | 3.9+ | ML training, inference, and data processing |
+| **PostgreSQL** | 14+ | Primary relational database (`bitespeed` DB) |
 
-If you want to install this as a native app on your phone, you need Android Studio.
+**Python Dependencies**: `lightgbm`, `optuna`, `psycopg2`, `pandas`, `scikit-learn`, `numpy`, `joblib`.
 
-### The Big Problem: Windows Firewall!
-Before you build the app, you MUST tell Windows to let your phone talk back to your laptop!
-1. Hit the Windows Key, type **Windows Defender Firewall with Advanced Security**, and open it.
-2. Click **Inbound Rules** (on the left) ➔ **New Rule...** (on the right).
-3. Select **Port** ➔ **TCP**, type `5000` under specific local ports.
-4. Select **Allow the connection**, keep hitting Next, name it "NodeJS API", and hit Finish.
+## Setup & Running
 
-*Also ensure your laptop's IP address inside `frontend/src/services/api.js` matches your laptop's current network IP! (You can find it by typing `ipconfig` in your terminal and looking for IPv4 Address).*
+### Quick Start (Recommended)
+Launch the entire stack (Node Backend, React Frontend, Python ML Server) synchronously via the master script:
+```bash
+start.bat
+```
 
-### Compiling the App
-1. First, process the web code into Android files:
-   ```bash
-   cd frontend
-   npm run build
-   npx cap sync android
-   ```
-2. Open **Android Studio**.
-3. Open the folder: `frontend/android` inside Android Studio.
-4. Click **Build ➔ Build Bundle(s) / APK(s) ➔ Build APK(s)**.
-5. Once finished, install that `.apk` onto your Android phone!
+### Manual Setup
+**1. Node.js Backend:**
+```bash
+cd backend
+npm install
+node server.js
+```
+*Note: Ensure PostgreSQL is running with a database named `bitespeed`.*
+
+**2. React Frontend:**
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+**3. Python AI Server:**
+```bash
+cd ml
+pip install -r requirements.txt # (Ensure dependencies are met)
+python model_server.py
+```
+
+## Machine Learning Capabilities
+
+### 🚀 Dual LightGBM GPU Engines
+BiteSpeed utilizes a **split-model architecture**, running two independent, highly optimized LightGBM Regressors tailored to the specific variance patterns of different item categories. Both leverage GPU acceleration to exponentially speed up deep tree building (up to 150 leaves).
+- **Model 1 (Solid Foods / Snacks)**: Specifically trained to forecast demand for heavy items and snacks (`idly`, `dosa`, `pulao`, `sandwich`, `burger`, `pizza`, `samosa`, `panipuri`).
+- **Model 2 (Beverages & Desserts)**: Specifically trained to forecast demand for drinks and sweets (`milkshake`, `tea`, `coffee`, `juice`, `icecream`).
+
+### 🧠 Pre-Optimized Dual-Model Hyperparameters
+Instead of running risky live hyperparameter tuning, BiteSpeed employs scientifically pre-optimized Optuna dictionaries hardcoded into the pipeline for maximum stability. Administrators can trigger a "Retrain Model" from the frontend UI, which forces both models to immediately fit on the latest database entries using their respective optimized parameters (`num_leaves`, `colsample_bytree`, L1/L2 regularizations). Progress is streamed directly to the UI.
+
+### ⚡ Advanced Feature Engineering
+The model is fed deeply engineered features to accurately anticipate demand:
+- **Temporal & Cyclic**: Sine/cosine encoding of hours, days, and months.
+- **Lags & Trends**: Tracks absolute identical previous slot data (`lag_1`, `lag_7`), momentum averages, and rolling variance.
+- **Mock Heuristics**: Dynamically ingests `is_event_festival`, `exam_intensity`, and `attendance_estimate` to modulate baseline predictions during atypical periods.
+
+For an exhaustive breakdown of user roles, dashboards, and features, refer to [features.md](./features.md).

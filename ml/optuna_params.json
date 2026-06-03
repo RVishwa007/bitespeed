@@ -1,0 +1,21 @@
+{
+    "params": {
+        "n_estimators": 1900,
+        "max_depth": 11,
+        "learning_rate": 0.03337919294971768,
+        "num_leaves": 125,
+        "min_child_samples": 10,
+        "subsample": 0.8309655086376062,
+        "subsample_freq": 1,
+        "colsample_bytree": 0.9370465004286387,
+        "reg_alpha": 2.251953295895595,
+        "reg_lambda": 4.369122460386151
+    },
+    "last_run_ist": "2026-06-03 08:06:52",
+    "metrics": {
+        "r2": 0.9548,
+        "mae": 1.8953,
+        "rmse": 3.6094,
+        "exact_pct": 51.53
+    }
+}

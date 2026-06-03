@@ -1,327 +1,936 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  getPendingUsers, approveUser, rejectUser,
-  getAdminUsers, adminAddUser, adminRemoveUser, adminBlockUser,
-  adminUnblockUser, getAdminBlockedUsers, getAdminRejectedUsers,
-  adminUnfreezeUser, getAdminRecentData, adminRemoveData, getDemand
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity,
+  BarChart3,
+  Check,
+  Database,
+  LogOut,
+  RefreshCw,
+  Shield,
+  Trash2,
+  UserPlus,
+  Users,
+  X,
+  Settings,
+  CheckCircle2,
+} from 'lucide-react';
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import EnvironmentSettings from './EnvironmentSettings';
+import {
+  getPendingUsers,
+  approveUser,
+  rejectUser,
+  getAdminUsers,
+  adminAddUser,
+  adminRemoveUser,
+  adminBlockUser,
+  adminUnblockUser,
+  getAdminBlockedUsers,
+  getAdminRejectedUsers,
+  adminUnfreezeUser,
+  adminRemoveData,
+  adminChangePassword,
+  getDemand,
+  getOrdersByDate,
+  getDemandByDate,
+  getMenuIntelligence,
+  retrainModel,
+  getModelStatus,
+  getModelStats
 } from '../services/api';
+import { MENU_ITEMS, PRICES, COSTS } from '../data/items';
+
+const CHART_COLORS = [
+  '#f43f5e', // rose
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#eab308', // yellow
+  '#8b5cf6', // violet
+  '#f97316', // orange
+  '#14b8a6', // teal
+  '#ec4899', // pink
+];
 
 const AdminDashboard = ({ onLogout }) => {
-  const [activeTab, setActiveTab] = useState('pending');
-  
-  // States
+  const [activeTab, setActiveTab] = useState('demand');
+  const [userTab, setUserTab] = useState('pending');
   const [pendingUsers, setPendingUsers] = useState([]);
   const [users, setUsers] = useState([]);
   const [blockedUsers, setBlockedUsers] = useState([]);
   const [rejectedUsers, setRejectedUsers] = useState([]);
-  const [recentData, setRecentData] = useState([]);
   const [demandData, setDemandData] = useState(null);
-
-  const [loading, setLoading] = useState(false);
+  const [orders, setOrders] = useState([]);
+  const [maintenanceDate, setMaintenanceDate] = useState(() => toDateInput(new Date()));
+  const [maintenanceUserId, setMaintenanceUserId] = useState('');
+  const [showAllDays, setShowAllDays] = useState(false);
   const [error, setError] = useState('');
-  const [toast, setToast] = useState({ show: false, message: '', type: 'success' });
-
-  // Add User Form
+  const [toast, setToast] = useState({ show: false, message: '' });
   const [newUsername, setNewUsername] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [newType, setNewType] = useState('n');
 
-  const showToast = (message, type = 'success') => {
-    setToast({ show: true, message, type });
-    setTimeout(() => setToast({ show: false, message: '', type: 'success' }), 3000);
+
+  const showToast = (message) => {
+    setToast({ show: true, message });
+    window.setTimeout(() => setToast({ show: false, message: '' }), 2600);
   };
 
-  const fetchAll = async () => {
-    setLoading(true);
+  const fetchAll = useCallback(async () => {
     setError('');
     try {
-      if (activeTab === 'pending') {
-        setPendingUsers(await getPendingUsers());
-      } else if (activeTab === 'users') {
-        setUsers(await getAdminUsers());
-      } else if (activeTab === 'blocked') {
-        setBlockedUsers(await getAdminBlockedUsers());
-        setRejectedUsers(await getAdminRejectedUsers());
-      } else if (activeTab === 'dataset') {
-        setRecentData(await getAdminRecentData());
-      } else if (activeTab === 'demand') {
+      if (activeTab === 'users') {
+        if (userTab === 'pending') setPendingUsers(await getPendingUsers());
+        if (userTab === 'users') setUsers(await getAdminUsers());
+        if (userTab === 'blocked') {
+          setBlockedUsers(await getAdminBlockedUsers());
+          setRejectedUsers(await getAdminRejectedUsers());
+        }
+      }
+      if (activeTab === 'demand') {
         const data = await getDemand();
-        if (data && data.error) setError(data.error);
+        if (data?.error) setError(data.error);
         else setDemandData(data);
       }
+      if (activeTab === 'orders') {
+        const data = await getOrdersByDate(showAllDays ? '' : maintenanceDate, maintenanceUserId);
+        setOrders(Array.isArray(data) ? data : []);
+      }
     } catch (err) {
-      setError(err.error || 'Failed to fetch data');
+      setError(err.error || err.message || 'Failed to fetch data.');
+    }
+  }, [activeTab, userTab, maintenanceDate, maintenanceUserId, showAllDays]);
+
+  useEffect(() => {
+    fetchAll();
+    const interval = window.setInterval(fetchAll, 5000);
+    return () => window.clearInterval(interval);
+  }, [fetchAll]);
+
+  const doAction = async (actionFn, successMsg) => {
+    try {
+      await actionFn();
+      showToast(successMsg);
+      fetchAll();
+    } catch (err) {
+      showToast(err.error || 'Action failed.');
+    }
+  };
+
+  const handleAddUser = (event) => {
+    event.preventDefault();
+    doAction(() => adminAddUser(newUsername.trim(), newPassword, newType), 'User added.').then(() => {
+      setNewUsername('');
+      setNewPassword('');
+    });
+  };
+
+  return (
+    <div className="app-bg admin-theme min-h-dvh">
+      <div className={`cn-toast ${toast.show ? 'show' : ''}`}>{toast.message}</div>
+      <Header activeTab={activeTab} setActiveTab={setActiveTab} onLogout={onLogout} />
+
+      <main className="app-shell-narrow">
+        {error && (
+          <div className="mb-5 rounded-3xl bg-[var(--error-container)] p-4 text-sm font-bold text-[var(--error)]">
+            {error}
+          </div>
+        )}
+
+        {activeTab === 'demand' && <AdminDemand demandData={demandData} onRefresh={fetchAll} />}
+        {activeTab === 'orders' && (
+          <DataMaintenance
+            orders={orders}
+            date={maintenanceDate}
+            setDate={setMaintenanceDate}
+            username={maintenanceUserId}
+            setUsername={setMaintenanceUserId}
+            showAllDays={showAllDays}
+            setShowAllDays={setShowAllDays}
+            onRefresh={fetchAll}
+            doAction={doAction}
+          />
+        )}
+        {activeTab === 'users' && (
+          <UserMaintenance
+            userTab={userTab}
+            setUserTab={setUserTab}
+            pendingUsers={pendingUsers}
+            users={users}
+            blockedUsers={blockedUsers}
+            rejectedUsers={rejectedUsers}
+            doAction={doAction}
+            newUsername={newUsername}
+            setNewUsername={setNewUsername}
+            newPassword={newPassword}
+            setNewPassword={setNewPassword}
+            newType={newType}
+            setNewType={setNewType}
+            handleAddUser={handleAddUser}
+
+          />
+        )}
+        {activeTab === 'intelligence' && <MenuIntelligence />}
+        {activeTab === 'settings' && <EnvironmentSettings />}
+      </main>
+
+      <nav className="bottom-nav">
+        <button className={activeTab === 'demand' ? 'active' : ''} onClick={() => setActiveTab('demand')} type="button"><BarChart3 className="mx-auto mb-1" size={18} />Demand</button>
+        <button className={activeTab === 'intelligence' ? 'active' : ''} onClick={() => setActiveTab('intelligence')} type="button"><BarChart3 className="mx-auto mb-1" size={18} />Intelligence</button>
+        <button className={activeTab === 'orders' ? 'active' : ''} onClick={() => setActiveTab('orders')} type="button"><Database className="mx-auto mb-1" size={18} />Data</button>
+        <button className={activeTab === 'users' ? 'active' : ''} onClick={() => setActiveTab('users')} type="button"><Users className="mx-auto mb-1" size={18} />Users</button>
+        <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button"><Shield className="mx-auto mb-1" size={18} />Settings</button>
+      </nav>
+    </div>
+  );
+};
+
+const Header = ({ activeTab, setActiveTab, onLogout }) => (
+  <header className="cn-topbar">
+    <div className="cn-topbar-inner">
+      <div className="brand-lockup">
+        <div className="brand-mark"><Shield size={22} /></div>
+        <div>
+          <h1 className="brand-title">Admin Console</h1>
+          <p className="brand-subtitle">Users, demand, and clean data</p>
+        </div>
+      </div>
+      <div className="topbar-actions">
+        {[
+          ['demand', 'Demand', BarChart3],
+          ['intelligence', 'Intelligence', BarChart3],
+          ['orders', 'Data', Database],
+          ['users', 'Users', Users],
+          ['settings', 'Settings', Shield],
+        ].map(([id, label, Icon]) => (
+          <button key={id} className={`cn-button hide-mobile ${activeTab === id ? 'cn-button-primary' : 'cn-button-secondary'}`} onClick={() => setActiveTab(id)} type="button">
+            <Icon size={16} />
+            {label}
+          </button>
+        ))}
+        <button className="cn-button cn-button-danger cn-icon-button" onClick={onLogout} type="button" aria-label="Logout">
+          <LogOut size={17} />
+        </button>
+      </div>
+    </div>
+  </header>
+);
+
+const AdminDemand = ({ demandData, onRefresh }) => {
+  const [demandTab, setDemandTab] = useState('normal');
+  const [advancedDate, setAdvancedDate] = useState('');
+  const [advancedDemand, setAdvancedDemand] = useState(null);
+  const [advancedLoading, setAdvancedLoading] = useState(false);
+  const [modelStatus, setModelStatus] = useState('idle'); // 'idle' or 'training'
+  const [modelProgress, setModelProgress] = useState(0);
+  const [modelStats, setModelStats] = useState(null);
+
+  useEffect(() => {
+    let intervalId;
+    const checkStatus = async () => {
+      try {
+        const res = await getModelStatus();
+        setModelStatus(res.is_training ? res.is_training : 'idle');
+        setModelProgress(res.progress || 0);
+        
+        // Fetch stats if not training
+        if (!res.is_training) {
+          const statsRes = await getModelStats();
+          setModelStats(statsRes);
+        }
+      } catch (err) {
+        console.error("Failed to fetch model status", err);
+      }
+    };
+    checkStatus();
+    intervalId = setInterval(checkStatus, 5000);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  
+  const handleRetrain = async () => {
+    try {
+      await retrainModel();
+      setModelStatus('model');
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const fetchAdvancedDemand = async (date) => {
+    if (!date) return;
+    setAdvancedLoading(true);
+    try {
+      const data = await getDemandByDate(date);
+      setAdvancedDemand(data);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setAdvancedLoading(false);
+    }
+  };
+
+  const financials = demandData?.financials || {};
+  const today = demandData?.today || [];
+  const chartData = buildChartData(today);
+  const [selectedItems, setSelectedItems] = useState([]);
+  const toggleItem = (itemName) => {
+    setSelectedItems((current) => current.includes(itemName) ? current.filter((item) => item !== itemName) : [...current, itemName]);
+  };
+  return (
+    <div className="space-y-5">
+      <section className="ops-hero p-5 sm:p-7">
+        <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-2xl">
+            <p className="eyebrow mb-2">Admin intelligence layer</p>
+            <h2 className="section-title">AI Demand Analysis</h2>
+            <p className="section-copy">Forecast accuracy, tomorrow planning, and financial health in one command surface.</p>
+          </div>
+          <div className="flex items-center gap-3">
+            {modelStatus === 'model' || modelStatus === 'training' || modelStatus === true ? (
+              <span className="flex items-center gap-2 text-xs font-bold text-blue-500">
+                <RefreshCw size={14} className="animate-spin" /> Retraining model ({modelProgress}%)...
+              </span>
+            ) : (
+              <span className="flex items-center gap-2 text-xs font-bold text-emerald-500">
+                <CheckCircle2 size={14} /> System Idle
+              </span>
+            )}
+            <button className="cn-button cn-button-primary" onClick={handleRetrain} disabled={modelStatus !== 'idle'} type="button">
+              <RefreshCw size={14} className={modelStatus !== 'idle' ? "animate-spin" : ""} /> Retrain Model
+            </button>
+            <button className="cn-button cn-button-primary" onClick={onRefresh} type="button">
+              <RefreshCw size={16} />
+              Refresh Data
+            </button>
+          </div>
+        </div>
+        
+
+      </section>
+
+      <div className="flex border-b border-[var(--outline-variant)] overflow-x-auto no-scrollbar mb-4">
+        <button
+          className={`px-4 py-3 text-sm font-bold tracking-wide uppercase transition-colors whitespace-nowrap ${demandTab === 'normal' ? 'border-b-2 border-[var(--primary)] text-[var(--primary)]' : 'text-[var(--on-surface-variant)] hover:text-[var(--on-surface)]'}`}
+          onClick={() => setDemandTab('normal')}
+        >
+          Normal
+        </button>
+        <button
+          className={`px-4 py-3 text-sm font-bold tracking-wide uppercase transition-colors whitespace-nowrap ${demandTab === 'advanced' ? 'border-b-2 border-[var(--primary)] text-[var(--primary)]' : 'text-[var(--on-surface-variant)] hover:text-[var(--on-surface)]'}`}
+          onClick={() => setDemandTab('advanced')}
+        >
+          Advanced
+        </button>
+      </div>
+
+      {demandTab === 'advanced' && (
+        <div className="glass-card p-5 sm:p-6 mb-6">
+          <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4 mb-6">
+            <div className="flex-1">
+              <label className="block text-xs font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Select Date for Advanced Prediction</label>
+              <input 
+                type="date" 
+                className="cn-input w-full" 
+                value={advancedDate}
+                onChange={(e) => setAdvancedDate(e.target.value)}
+              />
+            </div>
+            <button 
+              className="cn-button cn-button-primary"
+              disabled={!advancedDate || advancedLoading}
+              onClick={() => fetchAdvancedDemand(advancedDate)}
+            >
+              {advancedLoading ? 'Predicting...' : 'Run Advanced Analysis'}
+            </button>
+          </div>
+          
+          {advancedLoading ? (
+            <LoadingState label="Running advanced AI prediction models..." />
+          ) : advancedDemand ? (
+            advancedDemand.error ? (
+              <EmptyState label={advancedDemand.error} />
+            ) : (
+              <DemandList title={`Advanced Forecast for ${advancedDemand.customDate}`} items={advancedDemand.demand || []} />
+            )
+          ) : (
+            <EmptyState label="Select a date and run analysis to see advanced demand." />
+          )}
+        </div>
+      )}
+
+      {demandTab === 'normal' && (
+        !demandData || demandData.error ? (
+          <EmptyState label={demandData?.error || "Generating analysis..."} />
+        ) : (
+          <>
+            <section className="grid gap-4 sm:grid-cols-3">
+              <Metric label="Total Revenue" value={money(financials.totalRevenue || 0)} tone="revenue" />
+              <Metric label="Total Cost" value={money(financials.totalCost || 0)} tone="cost" />
+              <Metric label="Net Profit" value={money(financials.netProfit || 0)} tone="profit" />
+            </section>
+          <section className="analytics-grid">
+            <div className="analytics-card chart-panel">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="section-title text-2xl">Model Performance Curve</h2>
+                  <p className="section-copy">Total predicted and actual demand by hour.</p>
+                </div>
+                <span className="cn-chip cn-chip-success">XGBoost</span>
+              </div>
+              {chartData.length === 0 ? (
+                <EmptyState label="Hourly chart data is not available." />
+              ) : (
+                <div className="h-[250px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={chartData} margin={{ top: 10, right: 18, left: -18, bottom: 0 }}>
+                      <CartesianGrid stroke="rgba(134,116,97,0.18)" strokeDasharray="4 4" />
+                      <XAxis dataKey="time" tick={{ fontSize: 11, fill: '#534434' }} />
+                      <YAxis tick={{ fontSize: 11, fill: '#534434' }} />
+                      <Tooltip contentStyle={{ borderRadius: 16, border: '1px solid rgba(216,195,173,.5)' }} />
+                      {selectedItems.length === 0 && <Line type="monotone" dataKey="totalPred" name="Total Predicted" stroke="#6366f1" strokeWidth={3} dot={false} />}
+                      {selectedItems.length === 0 && <Line type="monotone" dataKey="totalAct" name="Total Actual" stroke="#10b981" strokeWidth={3} dot={{ r: 3 }} />}
+                      {selectedItems.map((itemName, index) => (
+                        <React.Fragment key={itemName}>
+                          <Line type="monotone" dataKey={`${itemName}_pred`} name={`${itemName} Pred`} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={3} strokeDasharray="5 5" dot={false} />
+                          <Line type="monotone" dataKey={`${itemName}_act`} name={`${itemName} Act`} stroke={CHART_COLORS[index % CHART_COLORS.length]} strokeWidth={3} dot={{ r: 3 }} />
+                        </React.Fragment>
+                      ))}
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                <button className={`category-chip ${selectedItems.length === 0 ? 'active' : ''}`} onClick={() => setSelectedItems([])} type="button">Total Demand</button>
+                {today.map((item, index) => (
+                  <button key={item.item} className={`category-chip ${selectedItems.includes(item.item) ? 'active' : ''}`} onClick={() => toggleItem(item.item)} type="button">
+                    <span className="inline-block h-2 w-2 rounded-full" style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }} />
+                    {item.item}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <DemandList title="Tomorrow's Forecast" items={demandData.tomorrow || []} />
+          </section>
+          <DemandList title="Today's Performance" items={demandData.today || []} today />
+        </>
+        )
+      )}
+    </div>
+  );
+};
+
+const DemandList = ({ title, items, today = false }) => {
+  const [expandedItem, setExpandedItem] = useState(null);
+
+  return (
+    <section className="glass-card p-5 sm:p-6">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="section-title text-2xl">{title}</h2>
+        <span className="cn-chip">{items.length} items</span>
+      </div>
+      {items.length === 0 ? <EmptyState label="No demand rows." /> : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((item) => (
+            <article 
+              className={`forecast-card cursor-pointer transition-all ${expandedItem === item.item ? 'ring-2 ring-[var(--primary)]' : ''}`} 
+              key={`${title}-${item.item}`}
+              onClick={() => setExpandedItem(expandedItem === item.item ? null : item.item)}
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <h3 className="m-0 text-xl font-bold capitalize">{item.item}</h3>
+                </div>
+                <div className="flex items-center gap-6 text-right">
+                  {today && (
+                    <div>
+                      <p className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--on-surface-variant)]">Predicted</p>
+                      <p className="m-0 text-3xl font-black text-[var(--on-surface)]">{item.predicted || 0}</p>
+                    </div>
+                  )}
+                  <div>
+                    <p className="m-0 text-xs font-bold uppercase tracking-wider text-[var(--primary)]">{today ? 'Actual' : 'Expected'}</p>
+                    <p className="m-0 text-4xl font-black text-[var(--primary)]">{today ? item.actual || 0 : item.predicted || 0}</p>
+                  </div>
+                </div>
+              </div>
+              <div className="forecast-meter mt-4"><span style={{ width: `${Math.max(8, Math.round(((today ? item.actual || 0 : item.predicted || 0) / Math.max(...items.map((entry) => today ? entry.actual || 0 : entry.predicted || 0), 1)) * 100))}%` }} /></div>
+              {today && (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <span className={`cn-chip ${((item.actual||0) - (item.predicted||0)) > 0 ? 'cn-chip-success' : ((item.actual||0) - (item.predicted||0)) < 0 ? '!bg-red-100 !text-red-700' : 'cn-chip-primary'}`}>
+                    {((item.actual||0) - (item.predicted||0)) > 0 ? `+${(item.actual||0) - (item.predicted||0)} Variance` : ((item.actual||0) - (item.predicted||0)) < 0 ? `${(item.actual||0) - (item.predicted||0)} Variance` : 'Exact Match'}
+                  </span>
+                  <span className="cn-chip cn-chip-warm">{money(item.profit || 0)} profit</span>
+                </div>
+              )}
+              {expandedItem === item.item && item.hourly && item.hourly.length > 0 && (
+                <div className="mt-4 border-t border-[var(--outline-variant)]/30 pt-4 animate-in slide-in-from-top-2">
+                  <p className="text-sm font-bold mb-4 text-[var(--on-surface-variant)] uppercase tracking-wider">Hourly Breakdown (8:00 - 18:00)</p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {(() => {
+                      const maxPred = Math.max(1, ...item.hourly.map(hr => hr.predicted || 0));
+                      return item.hourly.map((h, i) => {
+                        const hDiff = (h.actual || 0) - (h.predicted || 0);
+                        const ratio = Math.min(1, Math.max(0, (h.predicted || 0) / maxPred));
+                        const hue = 120 * (1 - ratio);
+                        const bgColor = `hsla(${hue}, 80%, 75%, 0.25)`;
+                        const borderColor = `hsla(${hue}, 80%, 70%, 0.6)`;
+                      
+                      return (
+                        <div key={i} className="flex flex-col items-center justify-center rounded-xl py-3 px-2 shadow-sm transition-colors duration-300" style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
+                          <span className="text-sm font-black mb-2">{h.time}:00</span>
+                          <div className="flex gap-4 w-full justify-center mb-1">
+                            <div className="text-center">
+                              <span className="text-[10px] font-bold text-[var(--on-surface-variant)] uppercase block mb-0.5">Pred</span>
+                              <span className="text-lg font-black text-[var(--on-surface)]">{h.predicted}</span>
+                            </div>
+                            {today && (
+                              <div className="text-center">
+                                <span className="text-[10px] font-bold text-[var(--on-surface-variant)] uppercase block mb-0.5">Act</span>
+                                <span className="text-lg font-black text-[var(--primary)]">{h.actual || 0}</span>
+                              </div>
+                            )}
+                          </div>
+                          {today && (
+                            <div className={`mt-1 text-[10px] font-black uppercase tracking-widest ${hDiff > 0 ? 'text-emerald-600' : hDiff < 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                              {hDiff > 0 ? `${hDiff} demand ▲` : hDiff < 0 ? `${Math.abs(hDiff)} short ▼` : 'spot on ✅'}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    });
+                  })()}
+                  </div>
+                </div>
+              )}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+};
+
+const DataMaintenance = ({ orders, date, setDate, username, setUsername, showAllDays, setShowAllDays, onRefresh, doAction }) => {
+  const totals = useMemo(() => {
+    return orders.reduce((acc, order) => {
+      const itemId = String(order.item || '').toLowerCase();
+      const qty = Number(order.quantity || 0);
+      const price = PRICES[itemId] || 0;
+      const cost = COSTS[itemId] || price * 0.4;
+      return {
+        count: acc.count + qty,
+        revenue: acc.revenue + price * qty,
+        cost: acc.cost + cost * qty,
+      };
+    }, { count: 0, revenue: 0, cost: 0 });
+  }, [orders]);
+
+  const setPresetDate = (offset) => {
+    const next = new Date();
+    next.setDate(next.getDate() + offset);
+    setShowAllDays(false);
+    setDate(toDateInput(next));
+  };
+
+  return (
+    <section className="glass-card p-5 sm:p-6">
+      <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="section-title">Data Maintenance</h2>
+          <p className="section-copy">Inspect and remove order rows when needed.</p>
+        </div>
+        <button className="cn-button cn-button-secondary" onClick={onRefresh} type="button"><RefreshCw size={16} />Refresh</button>
+      </div>
+
+      <div className="mb-5 grid gap-3 rounded-3xl border border-white/70 bg-white/52 p-4 lg:grid-cols-[auto_minmax(0,1fr)]">
+        <div className="flex flex-wrap gap-2">
+          <button className="cn-button cn-button-secondary" onClick={() => setPresetDate(-1)} type="button">Yesterday</button>
+          <button className="cn-button cn-button-secondary" onClick={() => setPresetDate(0)} type="button">Today</button>
+          <button className="cn-button cn-button-secondary" onClick={() => setPresetDate(1)} type="button">Tomorrow</button>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-[minmax(120px,1fr)_minmax(120px,1fr)_auto]">
+          <input className="form-input" type="text" placeholder="User ID" value={username} onChange={(event) => setUsername(event.target.value)} />
+          <input className="form-input" type="date" value={date} onChange={(event) => setDate(event.target.value)} disabled={showAllDays} />
+          <label className="cn-chip cursor-pointer">
+            <input type="checkbox" checked={showAllDays} onChange={(event) => setShowAllDays(event.target.checked)} />
+            All Days
+          </label>
+        </div>
+      </div>
+
+      <div className="mb-5 grid gap-3 sm:grid-cols-4">
+        <Metric label="Items" value={totals.count} tone="items" />
+        <Metric label="Revenue" value={money(totals.revenue)} tone="revenue" />
+        <Metric label="Cost" value={money(Math.round(totals.cost))} tone="cost" />
+        <Metric label="Profit" value={money(Math.round(totals.revenue - totals.cost))} tone="profit" />
+      </div>
+
+      {orders.length === 0 ? <EmptyState label="No orders found for this date." /> : (
+        <div className="cn-table-wrap max-h-[620px]">
+          <table className="cn-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Time</th>
+                <th>User</th>
+                <th>Item</th>
+                <th>Qty</th>
+                <th>Type</th>
+                <th className="text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {[...orders].sort((a, b) => {
+                const timeDiff = (b.effective_time || b.timestamp || 0) - (a.effective_time || a.timestamp || 0);
+                if (timeDiff !== 0) return timeDiff;
+                if (a.id && b.id) return a.id.localeCompare(b.id);
+                return (a.item || '').localeCompare(b.item || '');
+              }).map((order, index) => (
+                <tr key={order.id || `${order.item}-${order.timestamp}-${index}`} className={order.is_delivered ? 'opacity-55' : ''}>
+                  <td>{order.dateStr || '-'}</td>
+                  <td>{formatTime(order.effective_time || order.timestamp)}</td>
+                  <td className="font-semibold">{order.username}</td>
+                  <td className="capitalize">{order.item}{order.notes && <div className="mt-1 text-xs font-semibold text-[var(--primary)]">Note: {order.notes}</div>}</td>
+                  <td><span className="cn-chip">{order.quantity}</span></td>
+                  <td>{order.is_prebooking ? <span className="cn-chip cn-chip-warm">Prebook</span> : <span className="cn-chip cn-chip-success">Dine-In</span>}</td>
+                  <td className="text-right">
+                    <button className="cn-button cn-button-danger" onClick={() => doAction(() => adminRemoveData(order.id), 'Order removed.')} type="button">
+                      <Trash2 size={15} />
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+};
+
+const UserMaintenance = ({
+  userTab,
+  setUserTab,
+  pendingUsers,
+  users,
+  blockedUsers,
+  rejectedUsers,
+  doAction,
+  newUsername,
+  setNewUsername,
+  newPassword,
+  setNewPassword,
+  newType,
+  setNewType,
+  handleAddUser,
+}) => {
+  const [changePasswordMode, setChangePasswordMode] = useState(false);
+  const [editingUser, setEditingUser] = useState(null);
+  const [editingPassword, setEditingPassword] = useState('');
+
+  return (
+  <div className="space-y-5">
+    <div className="flex gap-2 overflow-x-auto pb-1">
+      {[
+        ['pending', 'Pending'],
+        ['users', 'All Users'],
+        ['blocked', 'Blocked'],
+      ].map(([id, label]) => (
+        <button key={id} className={`cn-button whitespace-nowrap ${userTab === id ? 'cn-button-primary' : 'cn-button-secondary'}`} onClick={() => setUserTab(id)} type="button">
+          {label}
+        </button>
+      ))}
+    </div>
+
+    {userTab === 'pending' && (
+      <section className="glass-card p-5 sm:p-6">
+        <h2 className="section-title mb-4">Pending Approvals</h2>
+        {pendingUsers.length === 0 ? <EmptyState label="No pending users." /> : (
+          <div className="grid gap-3">
+            {pendingUsers.map((user) => (
+              <UserRow key={user.username} title={user.username} subtitle={`Role: ${user.type}`}>
+                <button className="cn-button cn-button-primary" onClick={() => doAction(() => approveUser(user.username), 'User approved.')} type="button"><Check size={15} />Approve</button>
+                <button className="cn-button cn-button-secondary" onClick={() => doAction(() => rejectUser(user.username), 'User rejected.')} type="button"><X size={15} />Reject</button>
+                <button className="cn-button cn-button-danger" onClick={() => doAction(() => adminBlockUser(user.username), 'User blocked.')} type="button">Block</button>
+              </UserRow>
+            ))}
+          </div>
+        )}
+      </section>
+    )}
+
+    {userTab === 'users' && (
+      <>
+        <section className="glass-card p-5 sm:p-6">
+          <h2 className="section-title mb-4">Add User</h2>
+          <form className="grid gap-3 md:grid-cols-[1fr_1fr_auto_auto]" onSubmit={handleAddUser}>
+            <input className="form-input" required placeholder="Username" value={newUsername} onChange={(event) => setNewUsername(event.target.value)} />
+            <input className="form-input" required placeholder="Password" type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+            <select className="form-input" value={newType} onChange={(event) => setNewType(event.target.value)}>
+              <option value="n">Normal</option>
+              <option value="m">Management</option>
+              <option value="a">Admin</option>
+            </select>
+            <button className="cn-button cn-button-primary" type="submit"><UserPlus size={16} />Add</button>
+          </form>
+        </section>
+        <section className="glass-card p-5 sm:p-6">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="section-title">All Users</h2>
+            <button
+              className={`cn-button ${changePasswordMode ? 'cn-button-primary' : 'cn-button-secondary'}`}
+              onClick={() => setChangePasswordMode(current => !current)}
+              type="button"
+            >
+              <Shield size={16} />
+              {changePasswordMode ? 'Done' : 'Change Password'}
+            </button>
+          </div>
+          {changePasswordMode && (
+            <p className="section-copy mb-4 font-bold text-[var(--primary)]">Click "Set Password" on any user below to assign a new password.</p>
+          )}
+          <div className="grid gap-3 md:grid-cols-2">
+            {users.map((user) => (
+              <UserRow key={user.username} title={user.username} subtitle={`Role: ${user.type}`}>
+                {changePasswordMode ? (
+                  editingUser === user.username ? (
+                    <div className="flex gap-2 items-center w-full sm:w-auto mt-2 sm:mt-0">
+                      <input 
+                        type="text" 
+                        className="form-input flex-1 min-w-[120px] h-9 text-sm px-2" 
+                        placeholder="New password" 
+                        value={editingPassword}
+                        onChange={(e) => setEditingPassword(e.target.value)}
+                        autoFocus
+                      />
+                      <button 
+                        className="cn-button cn-button-primary h-9 px-3" 
+                        onClick={() => {
+                          if (editingPassword.trim()) {
+                            doAction(() => adminChangePassword(user.username, editingPassword.trim()), 'Password changed.')
+                              .then(() => setEditingUser(null));
+                          }
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button 
+                        className="cn-button cn-button-secondary h-9 px-3"
+                        onClick={() => setEditingUser(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="cn-button cn-button-primary"
+                      onClick={() => {
+                        setEditingUser(user.username);
+                        setEditingPassword('');
+                      }}
+                      type="button"
+                    >
+                      Set Password
+                    </button>
+                  )
+                ) : (
+                  <>
+                    <button className="cn-button cn-button-danger" onClick={() => doAction(() => adminRemoveUser(user.username), 'User removed.')} type="button">Remove</button>
+                    <button className="cn-button cn-button-secondary" onClick={() => doAction(() => adminBlockUser(user.username), 'User blocked.')} type="button">Block</button>
+                  </>
+                )}
+              </UserRow>
+            ))}
+          </div>
+        </section>
+      </>
+    )}
+
+    {userTab === 'blocked' && (
+      <div className="grid gap-5 lg:grid-cols-2">
+        <section className="glass-card p-5 sm:p-6">
+          <div className="mb-4">
+            <h2 className="section-title">Permanently Blocked</h2>
+            <p className="section-copy">Users here cannot log in or register until unblocked.</p>
+          </div>
+          {blockedUsers.length === 0 ? <EmptyState label="No blocked users." /> : (
+            <div className="grid gap-3">
+              {blockedUsers.map((user) => (
+                <UserRow key={`blocked-${user.username}`} title={user.username} subtitle="Blocked account">
+                  <button className="cn-button cn-button-primary" onClick={() => doAction(() => adminUnblockUser(user.username), 'User unblocked.')} type="button">
+                    Unblock
+                  </button>
+                </UserRow>
+              ))}
+            </div>
+          )}
+        </section>
+
+        <section className="glass-card p-5 sm:p-6">
+          <div className="mb-4">
+            <h2 className="section-title">Frozen / Rejected</h2>
+            <p className="section-copy">Cooldown users can be unfrozen without deleting their strike count.</p>
+          </div>
+          {rejectedUsers.length === 0 ? <EmptyState label="No frozen users." /> : (
+            <div className="grid gap-3">
+              {rejectedUsers.map((user) => (
+                <UserRow key={`frozen-${user.username}`} title={user.username} subtitle={`Rejected ${user.count || 1} time(s)`}>
+                  <button className="cn-button cn-button-primary" onClick={() => doAction(() => adminUnfreezeUser(user.username), 'User unfrozen.')} type="button">
+                    Unfreeze
+                  </button>
+                </UserRow>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    )}
+  </div>
+);
+};
+
+const UserRow = ({ title, subtitle, children }) => (
+  <div className="user-control-card flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+    <div>
+      <p className="m-0 text-base font-bold">{title}</p>
+      <p className="m-0 mt-1 text-xs font-bold uppercase text-[var(--on-surface-variant)]">{subtitle}</p>
+    </div>
+    <div className="flex flex-wrap gap-2">{children}</div>
+  </div>
+);
+
+const Metric = ({ label, value, tone = 'revenue' }) => (
+  <article className={`metric-card ${tone}`}>
+    <p className="eyebrow mb-2">{label}</p>
+    <strong>{value}</strong>
+  </article>
+);
+
+const LoadingState = ({ label }) => (
+  <div className="glass-card flex min-h-48 flex-col items-center justify-center p-8 text-center">
+    <RefreshCw className="mb-3 animate-spin text-[var(--primary)]" size={28} />
+    <p className="m-0 text-sm font-bold uppercase text-[var(--on-surface-variant)]">{label}</p>
+  </div>
+);
+
+const EmptyState = ({ label }) => (
+  <div className="rounded-3xl border border-dashed border-[var(--outline-variant)] bg-white/45 p-8 text-center text-sm font-semibold text-[var(--on-surface-variant)]">
+    {label}
+  </div>
+);
+
+const priceValue = (price) => parseInt(String(price).replace(/\D/g, ''), 10) || 0;
+const money = (value) => `Rs. ${value}`;
+const formatTime = (timestamp) => {
+  if (!timestamp) return '--:--';
+  const time = Number(timestamp) < 20000000000 ? Number(timestamp) * 1000 : Number(timestamp);
+  return new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+const buildChartData = (items) => {
+  const hourMap = {};
+  items.forEach((item) => {
+    (item.hourly || []).forEach((hour) => {
+      const key = `${hour.time}:00`;
+      if (!hourMap[key]) hourMap[key] = { time: key, totalPred: 0, totalAct: 0 };
+      hourMap[key][`${item.item}_pred`] = Number(hour.predicted || 0);
+      hourMap[key][`${item.item}_act`] = Number(hour.actual || 0);
+      hourMap[key].totalPred += Number(hour.predicted || 0);
+      hourMap[key].totalAct += Number(hour.actual || 0);
+    });
+  });
+  return Object.values(hourMap).sort((a, b) => Number.parseInt(a.time, 10) - Number.parseInt(b.time, 10));
+};
+const toDateInput = (date) => {
+  const copy = new Date(date);
+  copy.setMinutes(copy.getMinutes() - copy.getTimezoneOffset());
+  return copy.toISOString().split('T')[0];
+};
+
+const MenuIntelligence = () => {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  const fetchIntelligence = async () => {
+    try {
+      setLoading(true);
+      const res = await getMenuIntelligence();
+      setData(res);
+    } catch (err) {
+      setError(err.error || 'Failed to fetch menu intelligence');
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchAll();
-  }, [activeTab]);
-
-  // Actions
-  const doAction = async (actionFn, successMsg) => {
-    try {
-      await actionFn();
-      showToast(successMsg, 'success');
-      fetchAll();
-    } catch (err) {
-      showToast(err.error || 'Action failed', 'error');
-    }
-  };
-
-  const handleAddUser = (e) => {
-    e.preventDefault();
-    doAction(() => adminAddUser(newUsername, newPassword, newType), 'User added successfully').then(() => {
-        setNewUsername('');
-        setNewPassword('');
-    });
-  };
+    fetchIntelligence();
+  }, []);
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-8 font-sans">
-      {toast.show && (
-        <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-full shadow-lg font-bold text-sm animate-in slide-in-from-top-4 fade-in duration-300 backdrop-blur-md ${toast.type === 'error' ? 'bg-red-500/90 text-white border border-red-400' : 'bg-black/90 text-white border border-gray-700'}`}>
-          {toast.message}
+    <div className="space-y-5">
+      <section className="ops-hero p-5 sm:p-7">
+        <div className="relative z-10 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-2xl">
+            <p className="eyebrow mb-2">Menu Optimization</p>
+            <h2 className="section-title">Menu Popularity Intelligence</h2>
+            <p className="section-copy">Identify trending, declining, and most profitable menu items based on historical data.</p>
+          </div>
+          <button className="cn-button cn-button-secondary" onClick={fetchIntelligence} type="button">
+            <RefreshCw size={16} />
+            Refresh
+          </button>
         </div>
-      )}
+      </section>
 
-      <header className="bg-black text-white p-5 rounded-b-3xl shadow-md mb-6">
-        <div className="flex justify-between items-center mb-1">
-           <h1 className="text-2xl font-extrabold tracking-tight">Admin Console</h1>
-           <button onClick={onLogout} className="bg-red-500/80 text-white px-3 py-1.5 rounded-lg font-bold text-xs shadow-sm hover:bg-red-600 transition-colors backdrop-blur-sm">Exit</button>
+      {loading ? (
+        <LoadingState label="Analyzing menu trends..." />
+      ) : error ? (
+        <EmptyState label={error} />
+      ) : data ? (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="glass-card p-5 sm:p-6 flex flex-col items-center justify-center text-center">
+            <div className="h-12 w-12 rounded-full bg-emerald-100 flex items-center justify-center mb-4">
+              <BarChart3 className="text-emerald-600" size={24} />
+            </div>
+            <p className="text-sm font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Trending Items</p>
+            <h3 className="text-2xl font-black text-emerald-600 capitalize">
+              {data.trending?.slice(0, 3).join(', ') || 'None'}
+            </h3>
+          </div>
+
+          <div className="glass-card p-5 sm:p-6 flex flex-col items-center justify-center text-center">
+            <div className="h-12 w-12 rounded-full bg-red-100 flex items-center justify-center mb-4">
+              <BarChart3 className="text-red-600 rotate-180" size={24} />
+            </div>
+            <p className="text-sm font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Declining Items</p>
+            <h3 className="text-2xl font-black text-red-600 capitalize">
+              {data.declining?.join(', ') || 'None'}
+            </h3>
+          </div>
+
+          <div className="glass-card p-5 sm:p-6 flex flex-col items-center justify-center text-center">
+            <div className="h-12 w-12 rounded-full bg-blue-100 flex items-center justify-center mb-4">
+              <Check className="text-blue-600" size={24} />
+            </div>
+            <p className="text-sm font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Fastest Growing</p>
+            <h3 className="text-2xl font-black text-blue-600 capitalize">
+              {data.fastestGrowing || 'None'}
+            </h3>
+          </div>
+
+          <div className="glass-card p-5 sm:p-6 flex flex-col items-center justify-center text-center">
+            <div className="h-12 w-12 rounded-full bg-amber-100 flex items-center justify-center mb-4">
+              <Check className="text-amber-600" size={24} />
+            </div>
+            <p className="text-sm font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Most Profitable</p>
+            <h3 className="text-2xl font-black text-amber-600 capitalize">
+              {data.mostProfitable || 'None'}
+            </h3>
+          </div>
         </div>
-        
-        {/* Tabs */}
-        <div className="flex space-x-2 mt-4 overflow-x-auto pb-2 scrollbar-hide">
-            {[
-                { id: 'pending', label: 'Pending' },
-                { id: 'users', label: 'Manage Users' },
-                { id: 'blocked', label: 'Blocked / Frozen' },
-                { id: 'dataset', label: 'Dataset' },
-                { id: 'demand', label: 'Demand Analysis' }
-            ].map(tab => (
-                <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id)}
-                    className={`whitespace-nowrap px-4 py-2 rounded-xl text-sm font-bold transition-colors ${activeTab === tab.id ? 'bg-white text-black' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
-                >
-                    {tab.label}
-                </button>
-            ))}
-        </div>
-      </header>
-
-      <main className="max-w-4xl mx-auto px-4">
-        {error && <div className="bg-red-50 text-red-600 p-4 rounded-2xl mb-6 text-sm font-bold border border-red-200">{error}</div>}
-
-        {activeTab === 'pending' && (
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-              <h2 className="text-xl font-bold mb-4 border-b pb-2">Pending Approvals</h2>
-              {loading ? <div className="text-center py-4">Loading...</div> : pendingUsers.length === 0 ? <div className="text-gray-500 text-sm font-bold opacity-50 text-center py-10">No pending requests.</div> : (
-                  <div className="space-y-4">
-                    {pendingUsers.map((user, idx) => (
-                      <div key={idx} className="flex flex-col sm:flex-row justify-between items-center p-4 bg-gray-50 rounded-2xl border border-gray-200">
-                        <div className="mb-2 sm:mb-0 text-left w-full sm:w-auto">
-                          <h3 className="font-black text-lg">{user.username}</h3>
-                          <p className="text-xs font-bold text-gray-500 uppercase">Role: {user.type}</p>
-                        </div>
-                        <div className="flex space-x-2 w-full sm:w-auto overflow-x-auto">
-                          <button onClick={() => doAction(() => approveUser(user.username), 'Approved!')} className="flex-1 sm:flex-none bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-4 py-2 rounded-xl text-sm">Approve</button>
-                          <button onClick={() => doAction(() => rejectUser(user.username), 'Rejected!')} className="flex-1 sm:flex-none bg-orange-100 hover:bg-orange-200 text-orange-600 font-bold px-4 py-2 rounded-xl text-sm">Reject</button>
-                          <button onClick={() => doAction(() => adminBlockUser(user.username), 'Blocked!')} className="flex-1 sm:flex-none bg-red-600 hover:bg-red-700 text-white font-bold px-4 py-2 rounded-xl text-sm">Block</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-              )}
-            </div>
-        )}
-
-        {activeTab === 'users' && (
-            <div className="space-y-6">
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                    <h2 className="text-xl font-bold mb-4 border-b pb-2">Add User</h2>
-                    <form onSubmit={handleAddUser} className="flex flex-col sm:flex-row gap-3">
-                        <input type="text" placeholder="Username" required value={newUsername} onChange={e=>setNewUsername(e.target.value)} className="flex-1 bg-gray-100 rounded-xl px-4 py-2 border-transparent focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all outline-none" />
-                        <input type="password" placeholder="Password" required value={newPassword} onChange={e=>setNewPassword(e.target.value)} className="flex-1 bg-gray-100 rounded-xl px-4 py-2 border-transparent focus:bg-white focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all outline-none" />
-                        <select value={newType} onChange={e=>setNewType(e.target.value)} className="bg-gray-100 rounded-xl px-4 py-2 border-transparent focus:bg-white outline-none font-bold text-gray-700">
-                            <option value="n">Normal</option>
-                            <option value="m">Management</option>
-                            <option value="a">Admin</option>
-                        </select>
-                        <button type="submit" className="bg-black text-white font-bold px-6 py-2 rounded-xl hover:bg-gray-800 transition-colors">Add User</button>
-                    </form>
-                </div>
-
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                    <h2 className="text-xl font-bold mb-4 border-b pb-2">All Users</h2>
-                    {loading ? <div className="text-center py-4">Loading...</div> : (
-                        <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-                        {users.map((user, idx) => (
-                            <div key={idx} className="flex justify-between items-center p-4 bg-gray-50 rounded-2xl border border-gray-200">
-                                <div><h3 className="font-bold text-gray-800">{user.username}</h3><span className="text-xs font-bold text-indigo-500 uppercase">Role: {user.type}</span></div>
-                                <div className="flex space-x-2">
-                                    <button onClick={() => doAction(() => adminRemoveUser(user.username), 'Removed')} className="text-red-500 text-xs font-bold px-3 py-1.5 bg-red-50 rounded-lg hover:bg-red-100 transition-colors">Remove</button>
-                                    <button onClick={() => doAction(() => adminBlockUser(user.username), 'Blocked')} className="text-white text-xs font-bold px-3 py-1.5 bg-red-600 rounded-lg hover:bg-red-700 transition-colors">Block</button>
-                                </div>
-                            </div>
-                        ))}
-                        </div>
-                    )}
-                </div>
-            </div>
-        )}
-
-        {activeTab === 'blocked' && (
-            <div className="space-y-6">
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                    <h2 className="text-xl font-bold mb-4 border-b pb-2 text-red-600">Permanently Blocked Users</h2>
-                    {blockedUsers.length === 0 ? <p className="text-gray-500 text-sm font-bold opacity-50 py-4">No blocked users.</p> : (
-                        <div className="grid gap-3 md:grid-cols-2">
-                            {blockedUsers.map((u, i) => (
-                                <div key={i} className="flex justify-between items-center p-4 bg-red-50 rounded-2xl border border-red-100">
-                                    <span className="font-bold text-red-900">{u.username}</span>
-                                    <button onClick={() => doAction(() => adminUnblockUser(u.username), 'Unblocked')} className="text-xs font-bold bg-white text-black px-4 py-2 rounded-xl shadow-sm hover:bg-gray-100 transition-colors">Unblock</button>
-                                </div>
-                            ))}
-                        </div>
-                    )}
-                </div>
-                
-                <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                    <h2 className="text-xl font-bold mb-4 border-b pb-2 text-orange-500">Frozen / Rejected Users (Cooldown)</h2>
-                    {rejectedUsers.length === 0 ? <p className="text-gray-500 text-sm font-bold opacity-50 py-4">No frozen users.</p> : (
-                        <div className="grid gap-3">
-                            {rejectedUsers.map((u, i) => {
-                                const diffDays = (Math.floor(Date.now() / 1000) - u.timestamp) / (60 * 60 * 24);
-                                let statusMsg = '';
-                                if (u.count >= 3) statusMsg = `${Math.max(0, Math.ceil(30 - diffDays))} days left of 30-day freeze`;
-                                else statusMsg = `${Math.max(0, Math.ceil((1 - diffDays) * 24))} hours left of 1-day freeze`;
-
-                                return (
-                                <div key={i} className="flex flex-col sm:flex-row justify-between items-center p-4 bg-orange-50 rounded-2xl border border-orange-100">
-                                    <div className="w-full sm:w-auto text-left mb-3 sm:mb-0">
-                                        <span className="font-black text-lg text-orange-900">{u.username}</span>
-                                        <p className="text-xs font-bold text-orange-700 uppercase tracking-wide mt-1">Rejections: {u.count} • {statusMsg}</p>
-                                    </div>
-                                    <button onClick={() => doAction(() => adminUnfreezeUser(u.username), 'Unfrozen')} className="w-full sm:w-auto text-xs font-bold bg-white text-black px-4 py-2 rounded-xl shadow-sm hover:bg-gray-100 transition-colors">Unfreeze</button>
-                                </div>
-                            )})}
-                        </div>
-                    )}
-                </div>
-            </div>
-        )}
-
-        {activeTab === 'dataset' && (
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100 overflow-hidden">
-                <h2 className="text-xl font-bold mb-2 border-b pb-2">Recent Dataset Entries</h2>
-                <p className="text-xs font-medium text-gray-500 mb-4 bg-gray-50 p-3 rounded-lg border border-gray-100">Remove recent anomalous orders to correct the model's training data. Changes will automatically trigger a model retraining in the background.</p>
-                {loading ? <div className="py-4 text-center">Loading...</div> : (
-                    <div className="overflow-x-auto max-h-96 overflow-y-auto rounded-xl border border-gray-100 shadow-inner">
-                        <table className="w-full text-left text-sm whitespace-nowrap">
-                            <thead className="bg-gray-50 text-gray-500 sticky top-0 backdrop-blur-md">
-                                <tr>
-                                    <th className="p-3 font-bold uppercase tracking-wider text-xs">User</th>
-                                    <th className="p-3 font-bold uppercase tracking-wider text-xs">Item</th>
-                                    <th className="p-3 font-bold uppercase tracking-wider text-xs">Slot</th>
-                                    <th className="p-3 font-bold uppercase tracking-wider text-xs">Qty</th>
-                                    <th className="p-3 font-bold uppercase tracking-wider text-xs text-right">Action</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-100">
-                                {recentData.map((d, i) => (
-                                    <tr key={i} className="hover:bg-gray-50 transition-colors">
-                                        <td className="p-3 font-medium text-gray-800">{d.username}</td>
-                                        <td className="p-3 text-gray-600 capitalize">{d.item}</td>
-                                        <td className="p-3 text-gray-600">{d.time_slot}:00</td>
-                                        <td className="p-3"><span className="bg-gray-200 text-gray-800 px-2 py-0.5 rounded font-bold text-xs">{d.quantity}</span></td>
-                                        <td className="p-3 text-right">
-                                            <button onClick={() => doAction(() => adminRemoveData(d.id), 'Datapoint removed')} className="text-red-500 hover:text-red-700 font-bold text-xs bg-red-50 hover:bg-red-100 px-3 py-1 rounded-lg transition-colors">Remove</button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
-                    </div>
-                )}
-            </div>
-        )}
-
-        {activeTab === 'demand' && (
-            <div className="bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
-                <div className="flex justify-between items-center border-b pb-4 mb-4">
-                    <h2 className="text-xl font-bold">AI Demand Analysis & Predictions</h2>
-                    <button onClick={fetchAll} className="bg-indigo-50 hover:bg-indigo-100 text-indigo-600 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors">Refresh Model</button>
-                </div>
-                {loading ? <div className="text-center py-10 font-bold text-indigo-400 animate-pulse">Generating Analysis...</div> : demandData ? (
-                    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                            <div className="bg-gradient-to-br from-indigo-50 to-blue-50 p-5 rounded-2xl border border-indigo-100/50 shadow-sm relative overflow-hidden">
-                                <div className="absolute top-0 right-0 -mr-4 -mt-4 w-16 h-16 bg-indigo-200 rounded-full opacity-20"></div>
-                                <p className="text-xs text-indigo-500 font-bold uppercase tracking-wider mb-1">Total Revenue</p>
-                                <p className="text-3xl font-black text-indigo-900">₹{demandData.financials?.totalRevenue || 0}</p>
-                            </div>
-                            <div className="bg-gradient-to-br from-red-50 to-orange-50 p-5 rounded-2xl border border-red-100/50 shadow-sm relative overflow-hidden">
-                                <div className="absolute top-0 right-0 -mr-4 -mt-4 w-16 h-16 bg-red-200 rounded-full opacity-20"></div>
-                                <p className="text-xs text-red-500 font-bold uppercase tracking-wider mb-1">Total Cost</p>
-                                <p className="text-3xl font-black text-red-900">₹{demandData.financials?.totalCost || 0}</p>
-                            </div>
-                            <div className="bg-gradient-to-br from-emerald-50 to-teal-50 p-5 rounded-2xl border border-emerald-100/50 shadow-sm relative overflow-hidden">
-                                <div className="absolute top-0 right-0 -mr-4 -mt-4 w-16 h-16 bg-emerald-200 rounded-full opacity-20"></div>
-                                <p className="text-xs text-emerald-600 font-bold uppercase tracking-wider mb-1">Net Profit</p>
-                                <p className="text-3xl font-black text-emerald-900">₹{demandData.financials?.netProfit || 0}</p>
-                            </div>
-                        </div>
-
-                        <div>
-                            <h3 className="font-bold text-lg mb-4 text-gray-800 flex items-center"><span className="w-2 h-2 bg-indigo-500 rounded-full mr-2"></span> Today's Performance</h3>
-                            <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
-                                {demandData.today && demandData.today.map((item, i) => (
-                                    <div key={i} className="bg-white p-4 rounded-2xl flex justify-between items-center border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
-                                        <div>
-                                            <p className="font-black text-lg text-gray-900">{item.item}</p>
-                                            <p className="text-xs font-medium text-gray-500 mt-1">Yest: {item.yesterday} • Profit: ₹{item.profit}</p>
-                                        </div>
-                                        <div className="text-right flex space-x-4 items-center">
-                                            <div className="flex flex-col items-end">
-                                                <span className="text-[10px] uppercase font-bold text-gray-400">Predicted</span>
-                                                <span className="font-black text-indigo-600 text-xl leading-none">{item.predicted}</span>
-                                            </div>
-                                            <div className="w-px h-8 bg-gray-200"></div>
-                                            <div className="flex flex-col items-end">
-                                                <span className="text-[10px] uppercase font-bold text-gray-400">Actual</span>
-                                                <span className="font-black text-emerald-500 text-xl leading-none">{item.actual}</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        <div className="bg-gray-900 rounded-3xl p-6 text-white shadow-lg overflow-hidden relative">
-                            <div className="absolute top-0 right-0 w-64 h-64 bg-indigo-500 rounded-full mix-blend-multiply filter blur-3xl opacity-20 -mr-20 -mt-20"></div>
-                            <div className="absolute bottom-0 left-0 w-64 h-64 bg-teal-500 rounded-full mix-blend-multiply filter blur-3xl opacity-20 -ml-20 -mb-20"></div>
-                            
-                            <h3 className="font-bold text-lg mb-6 relative z-10 flex items-center"><span className="w-2 h-2 bg-yellow-400 rounded-full mr-2 shadow-[0_0_8px_rgba(250,204,21,0.8)]"></span> Tomorrow's Forecast</h3>
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 relative z-10">
-                                {demandData.tomorrow && demandData.tomorrow.map((item, i) => (
-                                    <div key={i} className="bg-white/10 backdrop-blur-md border border-white/10 p-5 rounded-2xl text-center hover:bg-white/20 transition-colors cursor-default">
-                                        <p className="text-sm font-bold text-indigo-200 uppercase tracking-wider mb-2">{item.item}</p>
-                                        <p className="text-5xl font-black text-white">{item.predicted}</p>
-                                        <p className="text-[10px] text-gray-300 mt-2 font-medium uppercase tracking-widest">Est. Orders</p>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                ) : <div className="text-gray-500 text-sm font-medium py-10 text-center bg-gray-50 rounded-2xl border border-dashed border-gray-200">No analysis data available. The background model is likely running. Refresh in a few seconds.</div>}
-            </div>
-        )}
-
-      </main>
+      ) : null}
     </div>
   );
 };

@@ -1,305 +1,980 @@
-import React, { useState, useEffect } from 'react';
-import { getDemand } from '../services/api';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { BarChart3, CheckCircle2, ChevronLeft, ChevronRight, ClipboardList, LogOut, RefreshCw, Settings, Clock, ShoppingCart } from 'lucide-react';
+import iconImg from '../../assets/icon.png';
+
+import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
+import { getDemand, getTodayOrders, updateOrderStatus, getDemandByDate, getIngredientsForecast, subscribeToModelUpdates, retrainModel, getModelStatus } from '../services/api';
+import EnvironmentSettings from './EnvironmentSettings';
+import { PRICES, COSTS } from '../data/items';
+
+const IconImgComponent = ({ size, className }) => <img src={iconImg} alt="" className={`object-contain ${className || ''}`} style={{ width: size, height: size }} />;
+
+const money = (value) => `Rs. ${value}`;
+
+const buildChartData = (items) => {
+  const hourMap = {};
+  items.forEach((item) => {
+    (item.hourly || []).forEach((hour) => {
+      const key = `${hour.time}:00`;
+      if (!hourMap[key]) hourMap[key] = { time: key, totalPred: 0, totalAct: 0 };
+      hourMap[key][`${item.item}_pred`] = Number(hour.predicted || 0);
+      hourMap[key][`${item.item}_act`] = Number(hour.actual || 0);
+      hourMap[key].totalPred += Number(hour.predicted || 0);
+      hourMap[key].totalAct += Number(hour.actual || 0);
+    });
+  });
+  return Object.values(hourMap).sort((a, b) => Number.parseInt(a.time, 10) - Number.parseInt(b.time, 10));
+};
+
+const STATUSES = ['pending', 'preparing', 'ready', 'delivered'];
+const CHART_COLORS = [
+  '#f43f5e', // rose
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#eab308', // yellow
+  '#8b5cf6', // violet
+  '#f97316', // orange
+  '#14b8a6', // teal
+  '#ec4899', // pink
+];
 
 const Dashboard = ({ onLogout }) => {
+  const [activeTab, setActiveTab] = useState('orders');
   const [demand, setDemand] = useState(null);
+  const [todayOrders, setTodayOrders] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [expandedToday, setExpandedToday] = useState(null);
-  const [expandedTomorrow, setExpandedTomorrow] = useState(null);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [ingredients, setIngredients] = useState([]);
+
+  const fetchData = useCallback(async (showLoading = true) => {
+    if (showLoading) setLoading(true);
+    setError('');
+    try {
+      if (activeTab === 'demand') {
+        const [data, orders] = await Promise.all([getDemand(), getTodayOrders()]);
+        // getDemand now returns {error} instead of throwing for soft failures (202/training)
+        if (data?.error) {
+          setError(data.error);
+          setDemand(null);
+        } else {
+          setDemand(data);
+        }
+        setTodayOrders(Array.isArray(orders) ? orders : []);
+      } else if (activeTab === 'orders') {
+        const orders = await getTodayOrders();
+        setTodayOrders(Array.isArray(orders) ? orders : []);
+      } else if (activeTab === 'ingredients') {
+        const data = await getIngredientsForecast();
+        setIngredients(data.ingredients || []);
+      }
+    } catch (err) {
+      setError(err.message || err.error || 'Failed to load data.');
+    } finally {
+      setLoading(false);
+    }
+  }, [activeTab]);
+
 
   useEffect(() => {
-    const fetchDemand = async () => {
-      try {
-        const data = await getDemand();
-        
-        // Artificial delay so the human eye can admire the AI buffer loading!
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        
-        if (data.error) throw new Error(data.error);
-        setDemand(data);
-        setError('');
-      } catch (err) {
-        setError(err.message || 'Failed to load demand data');
-        // If it's a 202 training message, we could optionally retry
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchDemand();
-  }, []);
+    fetchData(true);
+    // Subscribe to SSE model_updated events for dynamic demand refresh
+    const unsubscribe = subscribeToModelUpdates(() => {
+      if (activeTab === 'demand') fetchData(false);
+    });
+    return unsubscribe;
+  }, [fetchData, activeTab]);
 
-  const showTomorrowOnly = demand && demand.currentHour > 18;
-
-  // Enforce precise requested ordering
-  const ITEM_ORDER = ['dosa', 'pizza', 'sandwich', 'milkshake', 'tea'];
-  const sortItems = (a, b) => {
-      const idxA = ITEM_ORDER.indexOf(a.item.toLowerCase());
-      const idxB = ITEM_ORDER.indexOf(b.item.toLowerCase());
-      // Fallback in case there are missing/extra items
-      return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+  const handleUpdateOrderStatus = async (orderId, currentStatus, direction) => {
+    try {
+      const index = STATUSES.indexOf(currentStatus || 'pending');
+      const nextStatus = STATUSES[Math.max(0, Math.min(STATUSES.length - 1, index + direction))];
+      if (!nextStatus || nextStatus === currentStatus) return;
+      await updateOrderStatus(orderId, nextStatus);
+      fetchData(false);
+    } catch (err) {
+      console.error(err);
+      setError("Failed to update order status.");
+    }
   };
 
-  const renderSkeletonSection = (title) => (
-    <section>
-      <div className="flex items-center gap-3 mb-6 px-2 mt-4">
-        <h3 className="text-2xl font-black text-slate-800">{title}</h3>
-      </div>
-      <div className="bg-white/40 backdrop-blur-sm rounded-3xl border border-gray-100 p-12 flex flex-col justify-center items-center h-48 shadow-inner">
-        <div className="relative">
-          <div className="absolute inset-0 bg-indigo-400 rounded-full blur animate-ping opacity-30"></div>
-          <div className="w-12 h-12 border-4 border-indigo-100 border-t-indigo-600 rounded-full animate-spin relative z-10"></div>
-        </div>
-        <p className="mt-4 text-sm font-bold text-slate-400 uppercase tracking-widest animate-pulse">Analyzing AI Data...</p>
-      </div>
-    </section>
-  );
+  const sortOrders = (a, b) => {
+    const timeDiff = (a.effective_time || a.timestamp || 0) - (b.effective_time || b.timestamp || 0);
+    if (timeDiff !== 0) return timeDiff;
+    if (a.id && b.id) return a.id.localeCompare(b.id);
+    return (a.item || '').localeCompare(b.item || '');
+  };
+
+  const formatTime = (ts) => {
+    const time = Number(ts) < 20000000000 ? Number(ts) * 1000 : Number(ts);
+    return new Date(time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'orders') return;
+    
+    const handleKeyDown = (e) => {
+      if (todayOrders.length === 0) return;
+      
+      const sortedOrders = [...todayOrders].sort(sortOrders);
+      
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex((prev) => Math.min(prev + 1, sortedOrders.length - 1));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex((prev) => Math.max(prev - 1, 0));
+      } else if (e.key === 'ArrowRight' && activeIndex >= 0 && activeIndex < sortedOrders.length) {
+        e.preventDefault();
+        const order = sortedOrders[activeIndex];
+        const status = order.status || (order.is_delivered ? 'delivered' : 'pending');
+        handleUpdateOrderStatus(order.id, status, 1);
+      } else if (e.key === 'ArrowLeft' && activeIndex >= 0 && activeIndex < sortedOrders.length) {
+        e.preventDefault();
+        const order = sortedOrders[activeIndex];
+        const status = order.status || (order.is_delivered ? 'delivered' : 'pending');
+        handleUpdateOrderStatus(order.id, status, -1);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeTab, todayOrders, activeIndex, handleUpdateOrderStatus]);
+
+  useEffect(() => {
+    if (activeIndex >= 0) {
+      const el = document.getElementById(`order-row-${activeIndex}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [activeIndex]);
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-100 to-slate-200 pb-12 font-sans relative selection:bg-indigo-200">
-      
-      {/* Premium Header - Always Visible */}
-      <header className="bg-white/70 backdrop-blur-2xl border-b border-white/50 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-4xl mx-auto px-6 py-5 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-purple-600 shadow-lg shadow-indigo-200 flex items-center justify-center text-white font-black text-xl">
-              AI
-            </div>
-            <div>
-              <h1 className="text-2xl font-black text-gray-900 tracking-tight leading-none">Management</h1>
-              <p className="text-sm font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-indigo-500 to-purple-500 mt-0.5">Predictive Intelligence</p>
-            </div>
+    <div className="app-bg management-theme min-h-dvh">
+      <Header activeTab={activeTab} setActiveTab={setActiveTab} onLogout={onLogout} />
+      <main className="app-shell-narrow">
+        {error && (
+          <div className="mb-5 rounded-3xl bg-[var(--error-container)] p-4 text-sm font-bold text-[var(--error)]">
+            {error}
           </div>
-          <button 
-            onClick={onLogout} 
-            className="group px-4 py-2 bg-white border border-gray-200 shadow-sm hover:shadow-md hover:border-red-200 rounded-xl font-bold text-sm text-gray-600 hover:text-red-600 transition-all active:scale-95"
-          >
-            Logout <span className="inline-block transition-transform group-hover:translate-x-1">→</span>
-          </button>
-        </div>
-      </header>
-
-      <main className="max-w-4xl mx-auto px-4 mt-8 space-y-8">
-        
-        {error && !loading && (
-           <div className="bg-white/80 backdrop-blur-xl p-6 rounded-3xl shadow-xl border border-red-100 flex items-center gap-4 animate-in slide-in-from-top-2">
-             <div className="w-12 h-12 bg-red-100 text-red-500 rounded-full flex items-center justify-center text-2xl font-bold">!</div>
-             <p className="text-red-600 font-extrabold text-lg">{error}</p>
-           </div>
         )}
 
-        {/* Status Hero Card - Always Rendered but content changes */}
-        <div className="bg-white/60 backdrop-blur-xl rounded-3xl p-8 border border-white shadow-xl shadow-indigo-100/50 flex flex-col sm:flex-row items-center justify-between gap-6 relative overflow-hidden mb-8">
-          <div className="absolute -top-24 -right-24 w-64 h-64 bg-gradient-to-br from-indigo-300 to-purple-300 rounded-full blur-3xl opacity-30 pointer-events-none"></div>
-          
-          <div className="relative z-10 w-full sm:w-auto text-center sm:text-left">
-            <h2 className="text-3xl font-black text-slate-900 mb-2">
-              Demand Analytics
-            </h2>
-            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/80 shadow-sm border border-gray-100 backdrop-blur-sm">
-               {loading || !demand ? (
-                 <span className="font-bold text-sm text-indigo-500 tracking-wide uppercase animate-pulse">Syncing AI Brain...</span>
-               ) : (
-                 <>
-                  <span className="relative flex h-3 w-3">
-                    <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${showTomorrowOnly ? 'bg-amber-400' : 'bg-emerald-400'}`}></span>
-                    <span className={`relative inline-flex rounded-full h-3 w-3 ${showTomorrowOnly ? 'bg-amber-500' : 'bg-emerald-500'}`}></span>
-                  </span>
-                  <span className="font-bold text-sm text-slate-700 tracking-wide uppercase">
-                    {showTomorrowOnly ? "Canteen Closed" : "Canteen Open"}
-                  </span>
-                 </>
-               )}
-            </div>
-          </div>
-          
-          <div className="text-center sm:text-right relative z-10">
-            <p className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-1">Current Hour</p>
-            <p className="text-4xl font-black font-mono text-slate-800">
-              {demand ? `${demand.currentHour}:00` : '--:--'}
-            </p>
-          </div>
-        </div>
+        {activeTab === 'settings' && <EnvironmentSettings />}
 
-        {/* Financial Overview */}
-        {!loading && demand && demand.financials && (
-          <section className="animate-in slide-in-from-bottom-4 duration-500 mb-8">
-            <div className="flex items-center gap-3 mb-4 px-2">
-                <h3 className="text-lg font-black text-slate-800 uppercase tracking-widest">Financial Performance</h3>
+        {activeTab === 'orders' && (
+          <section className="glass-card p-5 sm:p-6">
+            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="section-title">Today&apos;s Orders</h2>
+                <p className="section-copy">Update status as each kitchen ticket moves.</p>
+              </div>
+              <button className="cn-button cn-button-secondary" onClick={fetchData} type="button">
+                <RefreshCw size={16} />
+                Refresh
+              </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div className="bg-white/80 backdrop-blur-md p-6 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
-                <div>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Total Revenue</p>
-                  <p className="text-2xl font-black text-slate-800">₹{demand.financials.totalRevenue}</p>
-                </div>
-                <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-100 text-emerald-600 flex items-center justify-center font-bold text-xl">₹</div>
+            {loading ? (
+              <LoadingState label="Loading orders..." />
+            ) : todayOrders.length === 0 ? (
+              <EmptyState label="No orders today." />
+            ) : (
+              <div className="cn-table-wrap max-h-[640px]">
+                <table className="cn-table">
+                  <thead>
+                    <tr>
+                      <th>Time</th>
+                      <th>User</th>
+                      <th>Item</th>
+                      <th>Qty</th>
+                      <th>Type</th>
+                      <th className="text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...todayOrders].sort(sortOrders).map((order, index) => {
+                      const status = order.status || (order.is_delivered ? 'delivered' : 'pending');
+                      const isSelected = index === activeIndex;
+                      return (
+                        <tr 
+                          id={`order-row-${index}`}
+                          key={order.id || `${order.item}-${order.timestamp}-${index}`} 
+                          className={`
+                            ${status === 'delivered' ? 'opacity-40 bg-gray-100' : 
+                              status === 'pending' ? 'border-l-4 border-amber-500' : 
+                              status === 'preparing' ? 'bg-blue-100/80 border-l-4 border-blue-400' : 
+                              status === 'ready' ? 'bg-emerald-100/80 border-l-4 border-emerald-400' : ''}
+                            ${status === 'pending' ? 'bg-gradient-to-r from-amber-50 to-yellow-50' : ''}
+                            ${isSelected ? 'ring-2 ring-[var(--primary)] ring-inset shadow-md !bg-white' : 'transition-colors duration-200'}
+                          `}
+                        >
+                          <td>{formatTime(order.effective_time || order.timestamp)}</td>
+                          <td className="font-semibold">{order.username}</td>
+                          <td className="capitalize">
+                            {order.item}
+                            {order.notes && <div className="mt-1 text-xs font-semibold text-[var(--primary)]">Note: {order.notes}</div>}
+                          </td>
+                          <td><span className="cn-chip">{order.quantity}</span></td>
+                          <td>{order.is_prebooking ? <span className="cn-chip cn-chip-warm">Prebook</span> : <span className="cn-chip cn-chip-success">Dine-In</span>}</td>
+                          <td>
+                            <div className="flex items-center justify-end gap-2">
+                              <span className={`cn-chip capitalize text-xs font-bold border ${
+                                status === 'pending' ? '!bg-amber-100 !text-amber-700 !border-amber-300 ring-1 ring-amber-200' :
+                                status === 'preparing' ? '!bg-blue-100 !text-blue-800 !border-blue-200' :
+                                status === 'ready' ? '!bg-emerald-100 !text-emerald-800 !border-emerald-200' :
+                                '!bg-gray-100 !text-gray-600 !border-gray-200'
+                              }`}>{status.replace(/_/g, ' ')}</span>
+                              {status !== 'pending' && (
+                                <button className="cn-button cn-button-secondary cn-icon-button" onClick={() => handleUpdateOrderStatus(order.id, status, -1)} type="button" aria-label="Previous status">
+                                  <ChevronLeft size={16} />
+                                </button>
+                              )}
+                              {status !== 'delivered' && (
+                                <button className="cn-button cn-button-primary cn-icon-button" onClick={() => handleUpdateOrderStatus(order.id, status, 1)} type="button" aria-label="Next status">
+                                  <ChevronRight size={16} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
-              
-              <div className="bg-white/80 backdrop-blur-md p-6 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between hover:shadow-md transition-all">
-                <div>
-                  <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-1">Manufacturing Cost</p>
-                  <p className="text-2xl font-black text-rose-600">₹{demand.financials.totalCost}</p>
-                </div>
-                <div className="w-12 h-12 rounded-2xl bg-rose-50 border border-rose-100 text-rose-500 flex items-center justify-center font-bold text-xl">-</div>
-              </div>
-              
-              <div className="bg-gradient-to-br from-indigo-600 to-purple-600 p-6 rounded-3xl border border-indigo-400 shadow-lg shadow-indigo-200 flex items-center justify-between text-white relative overflow-hidden transition-transform hover:-translate-y-1">
-                <div className="absolute -right-4 -top-4 w-24 h-24 bg-white opacity-10 rounded-full blur-2xl"></div>
-                <div className="absolute -left-8 -bottom-8 w-32 h-32 bg-purple-500 opacity-20 rounded-full blur-3xl"></div>
-                <div className="relative z-10">
-                  <p className="text-xs font-bold text-indigo-100 uppercase tracking-widest mb-1">Net Profit</p>
-                  <p className="text-3xl font-black">₹{demand.financials.netProfit}</p>
-                </div>
-                <div className="relative z-10 w-12 h-12 rounded-2xl bg-white/20 backdrop-blur-md flex items-center justify-center font-black text-2xl">+</div>
-              </div>
-            </div>
+            )}
           </section>
         )}
 
-        {/* Data Sections */}
-        {loading || !demand ? (
-          <>
-            {renderSkeletonSection("Today's Performance")}
-            {renderSkeletonSection("Tomorrow's Forecast")}
-          </>
-        ) : (
-          <>
-            {/* Today's Data vs Current Status */}
-            <section className="mb-10">
-              <div className="flex items-center gap-3 mb-6 px-2">
-                <h3 className="text-2xl font-black text-slate-800">Today's Performance</h3>
-                <span className="px-3 py-1 bg-slate-200 text-slate-600 text-xs font-bold uppercase rounded-full tracking-wider">Metrics</span>
-              </div>
-              
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {demand.today && [...demand.today].sort(sortItems).map((item, idx) => {
-                  const diff = item.actual - item.predicted;
-                  const isExpanded = expandedToday === item.item;
-                  return (
-                    <div key={idx} className={`bg-white rounded-3xl border transition-all duration-300 shadow-sm hover:shadow-xl ${isExpanded ? 'border-indigo-300 shadow-indigo-100' : 'border-gray-100 hover:border-gray-300'} overflow-hidden`}>
-                      <div 
-                        className="p-6 cursor-pointer relative group"
-                        onClick={() => setExpandedToday(isExpanded ? null : item.item)}
-                      >
-                        {/* Background glow on hover */}
-                        <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-50 to-transparent opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        
-                        <div className="relative z-10 flex justify-between items-start">
-                          <div className="flex flex-col">
-                            <span className="font-black text-2xl text-slate-900 drop-shadow-sm mb-1">{item.item}</span>
-                            <div className="flex items-center gap-2">
-                              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
-                              <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Pred: {item.predicted}</p>
-                            </div>
-                          </div>
-                          
-                          <div className="text-right flex flex-col items-end">
-                            <p className="text-sm font-bold text-slate-500 uppercase tracking-widest mb-1">Actual</p>
-                            <div className="flex items-center gap-2 mb-2">
-                              <p className="text-3xl font-black text-slate-800 leading-none">{item.actual}</p>
-                              {/* Day-over-day logic */}
-                              {item.yesterday !== undefined && (
-                                  <span className={`px-2 py-0.5 rounded-md text-[10px] font-black tracking-widest shadow-sm ${item.actual > item.yesterday ? 'bg-emerald-100 text-emerald-700 border border-emerald-200' : item.actual < item.yesterday ? 'bg-rose-100 text-rose-700 border border-rose-200' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
-                                    {item.actual > item.yesterday ? '▲' : item.actual < item.yesterday ? '▼' : '–'} {Math.abs(item.actual - item.yesterday)}
-                                  </span>
-                              )}
-                            </div>
-                            
-                            {/* Next line: difference indicator & Profit */}
-                            <div className="flex flex-wrap justify-end gap-1.5">
-                              {diff > 0 && <span className="inline-block px-2 py-1 bg-emerald-50 text-emerald-700 text-[10px] font-bold rounded-md border border-emerald-200 shadow-sm">▲ {Math.abs(diff)} Demand</span>}
-                              {diff < 0 && <span className="inline-block px-2 py-1 bg-rose-50 text-rose-700 text-[10px] font-bold rounded-md border border-rose-200 shadow-sm">▼ {Math.abs(diff)} Short</span>}
-                              {diff === 0 && <span className="inline-block px-2 py-1 bg-slate-100 text-slate-600 text-[10px] font-bold rounded-md border border-slate-200 shadow-sm">✓ Spot On</span>}
-                              
-                              <span className="inline-block px-2 py-1 bg-gradient-to-r from-indigo-50 to-purple-50 text-indigo-700 text-[10px] font-black rounded-md border border-indigo-100 shadow-sm tracking-wide">
-                                ₹{item.profit} PROFIT
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      {isExpanded && item.hourly && (
-                        <div className="bg-slate-50 border-t border-slate-100 p-6 animate-in slide-in-from-top-2 duration-200">
-                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">Detailed Hourly Timeline</h4>
-                          <div className="grid grid-cols-2 gap-3">
-                            {item.hourly.map((h, i) => (
-                              <div key={i} className="flex justify-between items-center bg-white border border-slate-100 rounded-xl p-3 shadow-sm">
-                                <span className="font-black text-slate-400 text-sm">{h.time}:00</span>
-                                <div className="text-right text-xs space-y-1">
-                                  <p className="text-slate-500 font-bold">P: <span className="text-indigo-600">{h.predicted}</span></p>
-                                  <p className="text-slate-500 font-bold">A: <span className="text-slate-900">{h.actual}</span></p>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
-
-            {/* Tomorrow's AI Prediction */}
-            <section>
-              <div className="flex items-center gap-3 mb-6 px-2 mt-4">
-                <h3 className="text-2xl font-black text-slate-800">Tomorrow's Forecast</h3>
-                {showTomorrowOnly && <span className="px-3 py-1 bg-indigo-100 text-indigo-700 border border-indigo-200 text-xs font-bold uppercase rounded-full tracking-wider animate-pulse">Primary Focus</span>}
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                {demand.tomorrow && [...demand.tomorrow].sort(sortItems).map((item, idx) => {
-                  const isExpanded = expandedTomorrow === item.item;
-                  return (
-                    <div key={idx} className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-3xl border border-slate-700 shadow-2xl overflow-hidden relative group">
-                      <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
-                      
-                      <div 
-                        className="p-6 relative z-10 cursor-pointer"
-                        onClick={() => setExpandedTomorrow(isExpanded ? null : item.item)}
-                      >
-                        <div className="flex justify-between items-center">
-                          <div className="flex flex-col">
-                            <span className="font-black text-2xl text-white drop-shadow-md mb-1">{item.item}</span>
-                            <div className="flex items-center gap-2">
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse"></span>
-                              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">AI Projected</span>
-                            </div>
-                          </div>
-                          
-                          <div className="text-right">
-                            <span className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-br from-white to-slate-400 block pb-1 border-b border-white/10 mb-1">{item.predicted}</span>
-                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Total Qty</span>
-                          </div>
-                        </div>
-                      </div>
-                      
-                      {isExpanded && item.hourly && (
-                        <div className="relative z-10 bg-black/40 backdrop-blur-md border-t border-white/10 p-6">
-                          <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-4">AI Timeline Prediction</h4>
-                          <div className="grid grid-cols-3 gap-2">
-                            {item.hourly.map((h, i) => (
-                              <div key={i} className="flex flex-col items-center justify-center bg-white/5 border border-white/10 rounded-xl py-3 hover:bg-white/10 transition-colors">
-                                <span className="text-xs font-bold text-slate-500 mb-1">{h.time}:00</span>
-                                <span className="font-black text-white text-xl">{h.predicted}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </section>
-          </>
+        {activeTab === 'demand' && <DemandView demand={demand} loading={loading} error={error} onRefresh={() => fetchData(true)} todayOrders={todayOrders} />}
+        {activeTab === 'ingredients' && (
+          <IngredientsView initialIngredients={ingredients} onRefresh={fetchData} />
         )}
-
       </main>
+
+      <nav className="bottom-nav">
+        <button className={activeTab === 'orders' ? 'active' : ''} onClick={() => setActiveTab('orders')} type="button">
+          <ClipboardList size={18} className="mx-auto mb-1" />
+          Orders
+        </button>
+        <button className={activeTab === 'demand' ? 'active' : ''} onClick={() => setActiveTab('demand')} type="button">
+          <BarChart3 className="mx-auto mb-1" size={18} />
+          Demand
+        </button>
+        <button className={activeTab === 'ingredients' ? 'active' : ''} onClick={() => setActiveTab('ingredients')} type="button">
+          <ShoppingCart className="mx-auto mb-1" size={18} />
+          Ingredients
+        </button>
+        <button className={activeTab === 'settings' ? 'active' : ''} onClick={() => setActiveTab('settings')} type="button">
+          <Settings className="mx-auto mb-1" size={18} />
+          Settings
+        </button>
+      </nav>
     </div>
   );
 };
+
+const Header = ({ activeTab, setActiveTab, onLogout }) => (
+  <header className="cn-topbar">
+    <div className="cn-topbar-inner">
+      <div className="brand-lockup">
+        <div className="flex items-center justify-center bg-white rounded-full p-1.5 shadow-sm w-12 h-12"><img src={iconImg} alt="Logo" className="w-full h-full object-contain" /></div>
+        <div>
+          <h1 className="brand-title">Management</h1>
+          <p className="brand-subtitle">Culinary control center</p>
+        </div>
+      </div>
+      <div className="topbar-actions">
+        {[
+          ['orders', 'Orders', ClipboardList],
+          ['demand', 'Demand', BarChart3],
+          ['ingredients', 'Ingredients', ShoppingCart],
+          ['settings', 'Settings', Settings],
+        ].map(([id, label, Icon]) => (
+          <button key={id} className={`cn-button hide-mobile ${activeTab === id ? 'cn-button-primary' : 'cn-button-secondary'}`} onClick={() => setActiveTab(id)} type="button">
+            <Icon size={16} />
+            {label}
+          </button>
+        ))}
+        <button className="cn-button cn-button-danger cn-icon-button" onClick={onLogout} type="button" aria-label="Logout">
+          <LogOut size={17} />
+        </button>
+      </div>
+    </div>
+  </header>
+);
+
+
+
+const IngredientsView = ({ initialIngredients, onRefresh }) => {
+  const [expandedRow, setExpandedRow] = useState(null);
+  const [selectedDate, setSelectedDate] = useState('');
+  const [ingredientsData, setIngredientsData] = useState(initialIngredients || []);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [checkedItems, setCheckedItems] = useState(new Set());
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const rowRefs = React.useRef({});
+
+  const sortedIngredients = useMemo(() => {
+    return [...ingredientsData]
+      .filter(ing => ing.total > 0)
+      .sort((a, b) => {
+        const aChecked = checkedItems.has(a.name);
+        const bChecked = checkedItems.has(b.name);
+        if (aChecked === bChecked) return 0;
+        return aChecked ? 1 : -1;
+      });
+  }, [ingredientsData, checkedItems]);
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      if (sortedIngredients.length === 0) return;
+      
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex(prev => {
+          const next = Math.min((prev < 0 ? 0 : prev) + 1, sortedIngredients.length - 1);
+          rowRefs.current[next]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          return next;
+        });
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex(prev => {
+          const next = Math.max((prev < 0 ? 0 : prev) - 1, 0);
+          rowRefs.current[next]?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          return next;
+        });
+      } else if (e.key === 'Enter' && activeIndex >= 0) {
+        e.preventDefault();
+        const item = sortedIngredients[activeIndex];
+        if (item) toggleCheck(item.name);
+      }
+    };
+    
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [sortedIngredients, activeIndex]);
+
+  const toggleCheck = (name) => {
+    setCheckedItems(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(name)) newSet.delete(name);
+      else newSet.add(name);
+      return newSet;
+    });
+  };
+
+  useEffect(() => {
+    if (!selectedDate) {
+      setIngredientsData(initialIngredients || []);
+    }
+  }, [initialIngredients, selectedDate]);
+
+  const fetchForDate = async (dateStr) => {
+    if (!dateStr) return;
+    setLoading(true);
+    setError('');
+    try {
+      const data = await getIngredientsForecast(dateStr);
+      setIngredientsData(data.ingredients || []);
+    } catch (err) {
+      console.error(err);
+      setError(err.error || 'Failed to fetch ingredients for selected date.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6 cn-animate-fade-in">
+      <section className="ops-hero p-5 sm:p-7 rounded-2xl shadow-sm border border-[var(--outline-variant)]">
+        <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-2xl">
+            <p className="eyebrow mb-2">Inventory Planning</p>
+            <h2 className="section-title">Ingredients Forecast</h2>
+            <p className="section-copy">AI-driven ingredient requirements based on projected menu demand.</p>
+          </div>
+          <div className="flex items-center gap-3 bg-white/60 p-2 rounded-xl backdrop-blur-sm border border-white/40 shadow-sm">
+            <input 
+              type="date" 
+              className="cn-input text-sm border-none bg-transparent py-1.5 focus:ring-0" 
+              value={selectedDate}
+              onChange={(e) => {
+                setSelectedDate(e.target.value);
+                if(e.target.value) fetchForDate(e.target.value);
+              }}
+            />
+            <button className="cn-button cn-button-secondary py-1.5 px-3 rounded-lg" onClick={() => { setSelectedDate(''); onRefresh(); }} type="button">
+              <RefreshCw size={14} className="mr-1.5" />
+              Reset
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {error && <div className="bg-error/10 text-error px-4 py-3 rounded-xl mb-6 shadow-sm">{error}</div>}
+
+      {loading ? (
+        <div className="flex h-32 items-center justify-center bg-white/40 rounded-2xl border border-[var(--outline-variant)] backdrop-blur-sm">
+          <div className="loader border-4 border-t-[var(--primary)] border-gray-200 rounded-full w-8 h-8 animate-spin"></div>
+        </div>
+      ) : ingredientsData.length === 0 ? (
+        <div className="p-12 text-center text-[var(--on-surface-variant)] bg-white/40 rounded-2xl border border-[var(--outline-variant)] backdrop-blur-sm">
+          <ShoppingCart size={48} className="mx-auto mb-4 opacity-20" />
+          <p className="text-lg font-medium">No ingredients mapping available.</p>
+          <p className="text-sm opacity-70">Waiting for prediction data for this date.</p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {sortedIngredients.map((ing, idx) => {
+            const isExpanded = expandedRow === idx;
+            const isChecked = checkedItems.has(ing.name);
+            const isActive = activeIndex === idx;
+            const maxBreakdown = Math.max(...ing.breakdown.map(b => b.qty), 1);
+
+            return (
+              <div 
+                key={ing.name}
+                ref={el => rowRefs.current[idx] = el}
+                className={`flex flex-col rounded-xl border transition-all duration-300 ${
+                  isChecked ? 'opacity-60 bg-gray-50 border-gray-200' : 
+                  isActive ? 'bg-white shadow-md border-[var(--primary)] ring-1 ring-[var(--primary)]' : 
+                  'bg-white shadow-sm border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <div 
+                  className="flex items-center gap-4 p-4 cursor-pointer"
+                  onClick={() => setActiveIndex(idx)}
+                >
+                  <div 
+                    className="flex-shrink-0 cursor-pointer p-2 rounded hover:bg-gray-100"
+                    onClick={(e) => { e.stopPropagation(); setActiveIndex(idx); toggleCheck(ing.name); }}
+                  >
+                    <div className={`w-6 h-6 rounded border flex items-center justify-center transition-colors ${isChecked ? 'bg-green-500 border-green-500 text-white' : 'border-gray-300 bg-white'}`}>
+                      {isChecked && <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
+                    </div>
+                  </div>
+                  
+                  <div className="flex-1 flex justify-between items-center" onClick={() => setExpandedRow(isExpanded ? null : idx)}>
+                    <div>
+                      <h3 className={`font-semibold text-lg ${isChecked ? 'line-through text-gray-500' : 'text-gray-800'}`}>
+                        {ing.name}
+                      </h3>
+                      {!isExpanded && (
+                        <p className="text-xs text-gray-500 mt-0.5">{ing.breakdown.length} recipes • Click to expand</p>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <span className={`font-bold text-xl ${isChecked ? 'text-gray-500' : 'text-gray-900'}`}>{ing.total.toFixed(1)}</span>
+                      <span className="text-sm font-medium text-gray-500 ml-1.5 uppercase">{ing.unit}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isExpanded ? 'max-h-[600px] opacity-100' : 'max-h-0 opacity-0'}`}>
+                  <div className="px-14 pb-4 space-y-3 border-t border-gray-100 pt-3 mt-1">
+                    {ing.breakdown.map((b, i) => {
+                      const ratio = (b.qty / maxBreakdown) * 100;
+                      return (
+                        <div key={i} className="flex flex-col gap-1">
+                          <div className="flex justify-between items-end text-sm">
+                            <span className="text-gray-600 font-medium capitalize">{b.item}</span>
+                            <span className="font-semibold text-gray-700">
+                              {b.qty.toFixed(1)} <span className="text-gray-400 text-xs ml-0.5">{b.unit}</span>
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div 
+                              className="h-full bg-[var(--primary)] rounded-full opacity-70"
+                              style={{ width: `${ratio}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const DemandView = ({ demand, loading, onRefresh, todayOrders, error }) => {
+  const [demandTab, setDemandTab] = useState('normal');
+  const [advancedDate, setAdvancedDate] = useState('');
+  const [advancedDemand, setAdvancedDemand] = useState(null);
+  const [advancedLoading, setAdvancedLoading] = useState(false);
+  const [modelStatus, setModelStatus] = useState('idle');
+  const [modelProgress, setModelProgress] = useState(0);
+
+  useEffect(() => {
+    let intervalId;
+    const checkStatus = async () => {
+      try {
+        const res = await getModelStatus();
+        setModelStatus(res.is_training ? res.is_training : 'idle');
+        setModelProgress(res.progress || 0);
+      } catch (err) {
+        console.error("Failed to fetch model status", err);
+      }
+    };
+    checkStatus();
+    intervalId = setInterval(checkStatus, 5000);
+    return () => clearInterval(intervalId);
+  }, []);
+
+  const handleRetrain = async () => {
+    try {
+      await retrainModel();
+      setModelStatus('model');
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const isClosed = demand ? (demand.currentHour < 8 || demand.currentHour >= 18) : true;
+  const tomorrow = useMemo(() => {
+    const rawTomorrow = demand?.tomorrow || [];
+    return rawTomorrow.map(item => {
+       const newHourly = [];
+       for (let h = 8; h <= 18; h++) {
+           const existingHour = (item.hourly || []).find(x => x.time === h);
+           newHourly.push({
+               time: h,
+               predicted: existingHour ? existingHour.predicted : 0,
+               actual: existingHour ? (existingHour.actual || 0) : 0
+           });
+       }
+       return { ...item, hourly: newHourly, actual: item.actual || 0 };
+    });
+  }, [demand]);
+  
+  const financials = useMemo(() => {
+    let rev = 0;
+    let cost = 0;
+    (todayOrders || []).forEach(order => {
+        const itemLower = order.item.toLowerCase();
+        const price = PRICES[itemLower] || 0;
+        const itemCost = COSTS[itemLower] || 0;
+        rev += price * order.quantity;
+        cost += itemCost * order.quantity;
+    });
+    return {
+      totalRevenue: rev,
+      totalCost: cost,
+      netProfit: rev - cost
+    };
+  }, [todayOrders]);
+
+  const today = useMemo(() => {
+    const rawToday = demand?.today || [];
+    const actuals = {};
+    const actualsHourly = {};
+    (todayOrders || []).forEach(o => {
+        const key = o.item.toLowerCase();
+        
+        const effectiveTime = o.effective_time || o.order_timestamp || Math.floor(Date.now() / 1000);
+        let hour = new Date(effectiveTime * 1000).getHours();
+        if (hour < 8) hour = 8;
+        if (hour > 18) hour = 18;
+        
+        actuals[key] = (actuals[key] || 0) + o.quantity;
+        if (!actualsHourly[key]) actualsHourly[key] = {};
+        actualsHourly[key][hour] = (actualsHourly[key][hour] || 0) + o.quantity;
+    });
+    return rawToday.map(item => {
+       const key = item.item.toLowerCase();
+       const actual = actuals[key] || 0;
+       const rev = actual * (PRICES[key] || 0);
+       const cost = actual * (COSTS[key] || 0);
+       
+       const newHourly = [];
+       for (let h = 8; h <= 18; h++) {
+           const existingHour = (item.hourly || []).find(x => x.time === h);
+           const predQty = existingHour ? existingHour.predicted : 0;
+           const actQty = actualsHourly[key] ? (actualsHourly[key][h] || 0) : 0;
+           newHourly.push({
+               time: h,
+               predicted: predQty,
+               actual: actQty
+           });
+       }
+       
+       return {
+          ...item,
+          actual: actual,
+          profit: rev - cost,
+          hourly: newHourly
+       };
+    });
+  }, [demand, todayOrders]);
+
+  const fetchAdvancedDemand = async (date) => {
+    if (!date) return;
+    setAdvancedLoading(true);
+    try {
+      const data = await getDemandByDate(date);
+      setAdvancedDemand(data);
+    } catch (err) {
+      console.error(err);
+      setAdvancedDemand({ error: err.error || "Failed to fetch advanced demand." });
+    } finally {
+      setAdvancedLoading(false);
+    }
+  };
+
+  const renderDemand = () => {
+    return (
+      <div className="space-y-5">
+        <section className="ops-hero p-5 sm:p-7">
+          <div className="relative z-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="max-w-2xl">
+              <p className="eyebrow mb-2">Management cockpit</p>
+              <h2 className="section-title">Demand Analytics</h2>
+              <p className="section-copy">Live forecast, actuals, variance, and profit signals for kitchen planning.</p>
+            </div>
+            <div className="flex gap-2">
+              <button className="cn-button cn-button-secondary" onClick={onRefresh} type="button">
+                <RefreshCw size={16} />
+                Refresh
+              </button>
+            </div>
+          </div>
+          <div className="relative z-10 flex flex-wrap items-center gap-3 mt-5">
+            <span className={`cn-chip ${isClosed ? '!bg-red-100 !text-red-700 !border-red-200' : 'cn-chip-success'}`}>
+              <span className="pulse-dot" style={{ backgroundColor: isClosed ? '#dc2626' : undefined }} />
+              {isClosed ? 'Canteen closed' : 'Canteen open'}
+            </span>
+            <span className="cn-chip"><Clock size={14} /> Hour {demand?.currentHour ?? '--'}:00</span>
+
+            <div className="flex-1" />
+
+            <div className="flex items-center gap-3 bg-[var(--surface)] px-4 py-2 rounded-lg border border-[var(--outline-variant)]">
+              {modelStatus === 'model' || modelStatus === 'training' || modelStatus === true ? (
+                <span className="flex items-center gap-2 text-xs font-bold text-blue-500">
+                  <RefreshCw size={14} className="animate-spin" /> Retraining Model ({modelProgress}%)...
+                </span>
+              ) : (
+                <span className="flex items-center gap-2 text-xs font-bold text-emerald-500">
+                  <CheckCircle2 size={14} /> AI Ready
+                </span>
+              )}
+              <div className="h-4 w-px bg-[var(--outline-variant)] mx-1" />
+              <button className="text-xs font-bold text-[var(--on-surface-variant)] hover:text-[var(--primary)] flex items-center gap-1 transition-colors disabled:opacity-50" onClick={handleRetrain} disabled={modelStatus !== 'idle'} type="button">
+                <RefreshCw size={12} className={modelStatus !== 'idle' ? "animate-spin" : ""} /> Retrain
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <div className="flex border-b border-[var(--outline-variant)] overflow-x-auto no-scrollbar mb-4">
+          <button
+            className={`px-4 py-3 text-sm font-bold tracking-wide uppercase transition-colors whitespace-nowrap ${demandTab === 'normal' ? 'border-b-2 border-[var(--primary)] text-[var(--primary)]' : 'text-[var(--on-surface-variant)] hover:text-[var(--on-surface)]'}`}
+            onClick={() => setDemandTab('normal')}
+          >
+            Normal
+          </button>
+          <button
+            className={`px-4 py-3 text-sm font-bold tracking-wide uppercase transition-colors whitespace-nowrap ${demandTab === 'advanced' ? 'border-b-2 border-[var(--primary)] text-[var(--primary)]' : 'text-[var(--on-surface-variant)] hover:text-[var(--on-surface)]'}`}
+            onClick={() => setDemandTab('advanced')}
+          >
+            Advanced
+          </button>
+        </div>
+
+        {demandTab === 'advanced' && (
+          <div className="glass-card p-5 sm:p-6 mb-6">
+            <div className="flex flex-col sm:flex-row items-start sm:items-end gap-4 mb-6">
+              <div className="flex-1">
+                <label className="block text-xs font-bold uppercase tracking-wider text-[var(--on-surface-variant)] mb-2">Select Date for Advanced Prediction</label>
+                <input 
+                  type="date" 
+                  className="cn-input w-full" 
+                  value={advancedDate}
+                  onChange={(e) => setAdvancedDate(e.target.value)}
+                />
+              </div>
+              <button 
+                className="cn-button cn-button-primary"
+                disabled={!advancedDate || advancedLoading}
+                onClick={() => fetchAdvancedDemand(advancedDate)}
+              >
+                {advancedLoading ? 'Predicting...' : 'Run Advanced Analysis'}
+              </button>
+            </div>
+            
+            {advancedLoading ? (
+              <LoadingState label="Running advanced AI prediction models..." />
+            ) : advancedDemand ? (
+              <ForecastSection title={`Advanced Forecast for ${advancedDemand.customDate}`} items={advancedDemand.demand || []} mode="advanced" />
+            ) : (
+              <EmptyState label="Select a date and run analysis to see advanced demand." />
+            )}
+          </div>
+        )}
+
+        {demandTab === 'normal' && (
+          loading ? (
+            <LoadingState label="Analyzing demand..." />
+          ) : !demand ? (
+            <div className="glass-card p-8 text-center">
+              <p className="text-lg font-bold text-[var(--on-surface-variant)] mb-4">
+                {error || 'Demand data is not available yet.'}
+              </p>
+              <button className="cn-button cn-button-secondary" onClick={() => onRefresh()} type="button">
+                <RefreshCw size={16} />
+                Retry
+              </button>
+            </div>
+          ) : (
+            <>
+              <section className="grid gap-4 sm:grid-cols-3">
+                <Metric label="Revenue" value={money(financials.totalRevenue || 0)} tone="revenue" />
+                <Metric label="Cost" value={money(financials.totalCost || 0)} tone="cost" />
+                <Metric label="Net Profit" value={money(financials.netProfit || 0)} tone="profit" />
+              </section>
+
+              <div className="grid gap-4">
+                <ForecastSection title="Today's Performance" items={today} mode="today" />
+                <TomorrowForecastSection items={tomorrow} />
+              </div>
+            </>
+          )
+        )}
+      </div>
+    );
+  };
+
+  return renderDemand();
+};
+
+const ForecastSection = ({ title, items, mode }) => {
+  const [expandedItem, setExpandedItem] = useState(null);
+
+  return (
+    <section className="glass-card p-5 sm:p-6">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="section-title text-2xl">{title}</h2>
+        <span className="cn-chip">{items.length} items</span>
+      </div>
+      {items.length === 0 ? (
+        <EmptyState label="No forecast rows." />
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((item) => {
+            const diff = (item.actual || 0) - (item.predicted || 0);
+            const value = mode === 'today' ? item.actual ?? 0 : item.predicted ?? 0;
+            const max = Math.max(...items.map((entry) => mode === 'today' ? entry.actual || 0 : entry.predicted || 0), 1);
+            return (
+              <article 
+                key={`${mode}-${item.item}`} 
+                className={`forecast-card cursor-pointer transition-all ${expandedItem === item.item ? 'ring-2 ring-[var(--primary)]' : ''}`}
+                onClick={() => setExpandedItem(expandedItem === item.item ? null : item.item)}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="m-0 text-xl font-bold capitalize">{item.item}</h3>
+                  </div>
+                  <div className="flex items-center gap-4 text-right justify-end h-full">
+                    <div className="flex flex-col items-end">
+                      <p className="m-0 text-3xl font-bold text-[var(--on-surface)] opacity-80">{item.predicted ?? 0}</p>
+                      <p className="m-0 text-[10px] font-black uppercase text-[var(--on-surface-variant)] tracking-wider">Pred Qty</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="forecast-meter mt-4"><span style={{ width: `${Math.max(8, Math.round((value / max) * 100))}%` }} /></div>
+                {mode === 'today' && (
+                  <div className="mt-3 flex flex-wrap gap-2 items-center">
+                    {item.actual !== undefined && (
+                      <span className="cn-chip cn-chip-success">Actual {item.actual ?? 0}</span>
+                    )}
+                    <span className={`text-xs font-black uppercase tracking-wider ${diff > 0 ? 'text-emerald-500' : diff < 0 ? 'text-red-500' : 'text-blue-500'}`}>
+                      {diff > 0 ? `${diff} demand ▲` : diff < 0 ? `${Math.abs(diff)} short ▼` : 'spot on ✅'}
+                    </span>
+                    <span className="cn-chip cn-chip-warm ml-2">{money(item.profit || 0)} profit</span>
+                  </div>
+                )}
+                {expandedItem === item.item && item.hourly && item.hourly.length > 0 && (
+                  <div className="mt-4 border-t border-[var(--outline-variant)]/30 pt-4 animate-in slide-in-from-top-2">
+                    <p className="text-sm font-bold mb-4 text-[var(--on-surface-variant)] uppercase tracking-wider">Hourly Breakdown (8:00 - 18:00)</p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {(() => {
+                        const maxPred = Math.max(1, ...item.hourly.map(hr => hr.predicted || 0));
+                        return item.hourly.map((h, i) => {
+                          const hDiff = (h.actual || 0) - (h.predicted || 0);
+                          const ratio = Math.min(1, Math.max(0, (h.predicted || 0) / maxPred));
+                          const hue = 120 * (1 - ratio);
+                          const bgColor = `hsla(${hue}, 80%, 75%, 0.25)`;
+                          const borderColor = `hsla(${hue}, 80%, 70%, 0.6)`;
+                          
+                          return (
+                            <div key={i} className="flex flex-col items-center justify-center rounded-xl py-3 px-2 shadow-sm transition-colors duration-300" style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
+                              <span className="text-sm font-black mb-2">{h.time}:00</span>
+                            <div className="flex gap-4 w-full justify-center mb-1">
+                              <div className="text-center">
+                                <span className="text-[10px] font-bold text-[var(--on-surface-variant)] uppercase block mb-0.5">Pred</span>
+                                <span className="text-lg font-black text-[var(--on-surface)]">{h.predicted}</span>
+                              </div>
+                              {mode === 'today' && (
+                                <div className="text-center">
+                                  <span className="text-[10px] font-bold text-[var(--on-surface-variant)] uppercase block mb-0.5">Act</span>
+                                  <span className="text-lg font-black text-[var(--primary)]">{h.actual || 0}</span>
+                                </div>
+                              )}
+                            </div>
+                            {mode === 'today' && (
+                              <div className={`mt-1 text-[10px] font-black uppercase tracking-widest ${hDiff > 0 ? 'text-emerald-600' : hDiff < 0 ? 'text-red-600' : 'text-blue-600'}`}>
+                                {hDiff > 0 ? `${hDiff} demand ▲` : hDiff < 0 ? `${Math.abs(hDiff)} short ▼` : 'spot on ✅'}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()}
+                    </div>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+};
+
+const TomorrowForecastSection = ({ items }) => {
+  const [expandedItem, setExpandedItem] = useState(null);
+  const max = Math.max(...items.map(i => i.predicted || 0), 1);
+
+  return (
+    <section className="p-5 sm:p-6 rounded-3xl bg-[#0f172a] text-white shadow-2xl border border-slate-800">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h2 className="text-2xl font-bold tracking-tight text-white">Tomorrow's Forecast</h2>
+        <span className="cn-chip">{items.length} items</span>
+      </div>
+      {items.length === 0 ? (
+        <EmptyState label="No forecast rows." />
+      ) : (
+        <div className="grid gap-3 md:grid-cols-2">
+          {items.map((item) => {
+            const isExpanded = expandedItem === item.item;
+            const value = item.predicted ?? 0;
+            const prebookedActual = item.actual ?? 0;
+            return (
+              <article
+                key={`tomorrow-${item.item}`}
+                className={`p-4 rounded-2xl bg-slate-800/80 border border-slate-700/50 cursor-pointer transition-all ${isExpanded ? 'ring-2 ring-[var(--primary)] shadow-lg' : 'hover:bg-slate-800 hover:border-slate-600'}`}
+                onClick={() => setExpandedItem(isExpanded ? null : item.item)}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="m-0 text-xl font-bold capitalize text-white">{item.item}</h3>
+                    <p className="m-0 mt-1 text-xs font-bold uppercase text-slate-400 flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--primary)] opacity-80 animate-pulse inline-block" />
+                      AI Projected
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-4 text-right justify-end">
+                    <div className="flex flex-col items-end">
+                      <p className="m-0 text-3xl font-bold text-white">{value}</p>
+                      <p className="m-0 text-[10px] font-black uppercase text-slate-400 tracking-wider">Pred Qty</p>
+                    </div>
+                    {prebookedActual > 0 && (
+                      <>
+                        <div className="w-[1px] h-10 bg-[var(--outline-variant)] opacity-40" />
+                        <div className="flex flex-col items-end">
+                          <p className="m-0 text-3xl font-bold text-[var(--primary)]">{prebookedActual}</p>
+                          <p className="m-0 text-[10px] font-black uppercase text-[var(--primary)] tracking-wider">Pre-booked</p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="forecast-meter mt-4 bg-slate-900/50">
+                  <span style={{ width: `${Math.max(8, Math.round((value / max) * 100))}%` }} />
+                </div>
+                {isExpanded && item.hourly && item.hourly.length > 0 && (
+                  <div className="mt-4 border-t border-slate-700/80 pt-4 animate-in slide-in-from-top-2">
+                    <p className="text-sm font-bold mb-4 text-slate-400 uppercase tracking-wider">Hourly Breakdown (8:00 – 18:00)</p>
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {(() => {
+                        const maxPred = Math.max(1, ...item.hourly.map(hr => hr.predicted || 0));
+                        return item.hourly.map((h, i) => {
+                          const ratio = Math.min(1, Math.max(0, (h.predicted || 0) / maxPred));
+
+                          const hue = 120 * (1 - ratio);
+                          const bgColor = `hsla(${hue}, 70%, 22%, 0.85)`;
+                          const borderColor = `hsla(${hue}, 75%, 42%, 0.7)`;
+                          return (
+                            <div key={i} className="flex flex-col items-center justify-center rounded-xl py-3 px-2 shadow-sm text-white" style={{ backgroundColor: bgColor, border: `1px solid ${borderColor}` }}>
+                              <span className="text-sm font-black mb-2">{h.time}:00</span>
+                              <div className="flex gap-3 w-full justify-center">
+                                <div className="text-center">
+                                  <span className="text-[10px] font-bold text-slate-400 uppercase block mb-0.5">Pred</span>
+                                  <span className="text-lg font-black">{h.predicted}</span>
+                                </div>
+                                {(h.actual || 0) > 0 && (
+                                  <div className="text-center">
+                                    <span className="text-[10px] font-bold text-[var(--primary)] uppercase block mb-0.5">Book</span>
+                                    <span className="text-lg font-black text-[var(--primary)]">{h.actual}</span>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+};
+
+
+const Metric = ({ label, value, tone }) => {
+  return (
+    <article className={`metric-card ${tone}`}>
+      <p className="eyebrow mb-2">{label}</p>
+      <strong>{value}</strong>
+    </article>
+  );
+};
+
+const LoadingState = ({ label }) => (
+  <div className="glass-card flex min-h-48 flex-col items-center justify-center p-8 text-center">
+    <RefreshCw className="mb-3 animate-spin text-[var(--primary)]" size={28} />
+    <p className="m-0 text-sm font-bold uppercase text-[var(--on-surface-variant)]">{label}</p>
+  </div>
+);
+
+const EmptyState = ({ label }) => (
+  <div className="rounded-3xl border border-dashed border-[var(--outline-variant)] bg-white/45 p-8 text-center text-sm font-semibold text-[var(--on-surface-variant)]">
+    {label}
+  </div>
+);
+
+const sortOrders = (a, b) => {
+  const timeDiff = (a.effective_time || a.timestamp || 0) - (b.effective_time || b.timestamp || 0);
+  if (timeDiff !== 0) return timeDiff;
+  return a.item.localeCompare(b.item);
+};
+
+const formatTime = (timestamp) => {
+  if (!timestamp) return '--:--';
+  return new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
+
+
 
 export default Dashboard;
